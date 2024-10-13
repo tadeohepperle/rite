@@ -20,7 +20,7 @@ TokenMetadata :: struct #raw_union {
 	int:    i64,
 	float:  f64,
 	string: string,
-	bool:   bool,
+	bool:   bool, // is true for left parens and bracket if next to last token without whitespace in between: one expression: calc(3+3), these are two expressions: calc (3+3)
 	char:   rune,
 }
 
@@ -69,6 +69,7 @@ TokenType :: enum {
 	For, // for
 	Dyn, // dyn
 	Else, // else
+	Enum, // enum
 	Break, // break
 	Return, // return
 	Switch, // switch
@@ -86,11 +87,12 @@ TokenType :: enum {
 
 
 Scanner :: struct {
-	source:  string,
-	current: Char,
-	peek:    Char,
-	line:    int,
-	col:     int,
+	source:                       string,
+	current:                      Char,
+	peek:                         Char,
+	line:                         int,
+	col:                          int,
+	white_space_since_last_token: bool,
 }
 
 Char :: struct {
@@ -232,6 +234,8 @@ ident_or_keyword_token :: proc(name: string) -> Token {
 		return token(.Dyn)
 	case "else":
 		return token(.Else)
+	case "enum":
+		return token(.Enum)
 	case "return":
 		return token(.Return)
 	case "break":
@@ -255,6 +259,7 @@ ident_or_keyword_token :: proc(name: string) -> Token {
 scan_token :: proc(s: ^Scanner) -> Token {
 	#partial switch s.current.ty {
 	case .WhiteSpace:
+		s.white_space_since_last_token = true
 		advance(s)
 		// zoom over all whitespace but dont emit a token for it.
 		for s.current.ty == .WhiteSpace {
@@ -405,11 +410,11 @@ scan_token :: proc(s: ^Scanner) -> Token {
 	case .RightBrace:
 		return token(.RightBrace)
 	case .LeftBracket:
-		return token(.LeftBracket)
+		return Token{.LeftBracket, {bool = !s.white_space_since_last_token}}
 	case .RightBracket:
 		return token(.RightBracket)
 	case .LeftParen:
-		return token(.LeftParen)
+		return Token{.LeftParen, {bool = !s.white_space_since_last_token}}
 	case .RightParen:
 		return token(.RightParen)
 	}
@@ -425,18 +430,23 @@ token_error :: #force_inline proc(err: string) -> Token {
 }
 
 tokenize :: proc(source: string) -> (res: [dynamic]Token, err: Maybe(string)) {
+	init_char_types()
 	s := Scanner {
 		source = source,
 	}
 	advance(&s)
+	last_token: Token
 	for {
 		if s.peek.size == 0 {break}
 		advance(&s)
 		token := scan_token(&s)
+		s.white_space_since_last_token = false
 		if token.ty == .Error {
 			return res, token.meta.string
+		} else {
+			append(&res, token)
+			last_token = token
 		}
-		append(&res, token)
 	}
 	return res, nil
 
@@ -698,6 +708,8 @@ token_as_code :: proc(t: Token) -> string {
 		return "dyn" // maybe any instead???
 	case .Else:
 		return "else"
+	case .Enum:
+		return "enum"
 	case .Break:
 		return "break"
 	case .Return:
@@ -721,7 +733,6 @@ token_as_code :: proc(t: Token) -> string {
 }
 
 main :: proc() {
-	init_char_types()
 	source := `
 	Article :: {
 		authors: [string],
