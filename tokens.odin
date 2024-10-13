@@ -69,14 +69,16 @@ TokenType :: enum {
 	For, // for
 	Dyn, // dyn
 	Else, // else
+	Break, // break
+	Return, // return
 	Switch, // switch
 	Case, // switch
 
 	// multi character dynamic tokens:
 	Ident, // e.g. hello
+	LitBool, // true or false
 	LitInt, // e.g. 383
 	LitFloat, // e.g. 3.40
-	LitBool, // true or false
 	LitString, // "Hello"
 	LitChar, // 'Hello'
 	LitNone, //
@@ -230,6 +232,10 @@ ident_or_keyword_token :: proc(name: string) -> Token {
 		return token(.Dyn)
 	case "else":
 		return token(.Else)
+	case "return":
+		return token(.Return)
+	case "break":
+		return token(.Break)
 	case "case":
 		return token(.Case)
 	case "true":
@@ -692,6 +698,10 @@ token_as_code :: proc(t: Token) -> string {
 		return "dyn" // maybe any instead???
 	case .Else:
 		return "else"
+	case .Break:
+		return "break"
+	case .Return:
+		return "return"
 	case .Ident:
 		return t.meta.string
 	case .LitInt:
