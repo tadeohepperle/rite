@@ -9,3 +9,4 @@ todo :: proc(loc := #caller_location) -> ! {
 tprint :: proc(args: ..any) -> string {
 	return fmt.aprint(..args, allocator = context.temp_allocator, sep = "")
 }
+Err :: Maybe(string)

@@ -435,7 +435,6 @@ tokenize :: proc(source: string) -> (res: [dynamic]Token, err: Maybe(string)) {
 		source = source,
 	}
 	advance(&s)
-	last_token: Token
 	for {
 		if s.peek.size == 0 {break}
 		advance(&s)
@@ -445,8 +444,10 @@ tokenize :: proc(source: string) -> (res: [dynamic]Token, err: Maybe(string)) {
 			return res, token.meta.string
 		} else {
 			append(&res, token)
-			last_token = token
 		}
+	}
+	if len(res) == 0 || res[len(res) - 1].ty != .Eof {
+		append_elem(&res, token(.Eof))
 	}
 	return res, nil
 
@@ -731,81 +732,3 @@ token_as_code :: proc(t: Token) -> string {
 	}
 	unreachable()
 }
-
-main :: proc() {
-	source := `
-	Article :: {
-		authors: [string],
-		date: Date = {year: 2023, month: 7, day: 28},
-	}
-	MyU :: int | string | Article
-	u: MyU = 3
-	articles: [Article]
-	switch u {
-		case int:
-			u = "Hello" // error because u is a refererence to an int already
-		case string:
-			u.len().print()
-		case Article:
-			articles.push(u)
-	}
-
-	`
-	tokens, err := tokenize(source)
-	if err, is_err := err.(string); is_err {
-		print("Error: ", err)
-		print_tokens_as_code(tokens[:])
-	} else {
-		print("Source:")
-		print(source)
-		print("Tokenized:")
-		print_tokens_as_code(tokens[:])
-		print_tokens(tokens[:])
-	}
-
-}
-
-
-SOMECODE :: `
-Person :: {
-    name: string
-    age: int
-}
-p := Person{name: "Tom", age: 45}
-people : [Person] = [{"Hans", 23}, {"Claus", 12}] 
-
-PI :: 3.14
-Vec2 :: {x: float, y: float}
-cross :: (a: Vec2, b: Vec2) -> float {return a.x*b.y - a.y*b.x}
-
-Circle :: {radius: float}
-Rectangle :: {a: float, b: float}
-Polygon :: {outline : [Vec2]}
-
-// union of different types
-Shape :: Circle | Rectangle | Polygon
-
-area :: (shape: Shape) -> float {
-    switch shape {
-        case Circle: return shape.radius.squared() * PI 
-        case Rectangle: return shape.a * shape.b
-        case Polygon: return shape.outline.area() // see function below
-    }
-}
-
-area :: (outline: [Vec2]) -> float {
-    n := outline.len
-    if n < 3 { return 0 }
-    sum := 0
-    for i in n {
-        sum += outline[i].cross(outline[(i + 1) % n])
-    }
-    return sum
-}
-
-shapes := [Circle{3}, Rect{4,5}, Polygon{ouline: [{1,2}, {5,4}, {0,8}, {-2,4}]}]
-
-// print all shapes that are a circle or have a large area:
-shapes.filter(_.area() > 10 || _ is Circle).print()
-
-`

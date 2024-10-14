@@ -1,17 +1,23 @@
 package rite
 
+import "core:fmt"
 
 Parser :: struct {
 	tokens:  []Token,
 	current: int,
 }
 finished :: proc(p: ^Parser) -> bool {
-	return p.current < len(p.tokens)
+	return p.current >= len(p.tokens)
+}
+
+log :: proc(args: ..any) {
+	fmt.println(..args)
 }
 
 next :: proc(p: ^Parser) -> (tok: Token) {
 	tok = p.tokens[p.current]
 	p.current += 1
+	log("Consumed token ", tok.ty)
 	return tok
 }
 
@@ -20,30 +26,44 @@ current :: proc(p: ^Parser) -> (tok: Token) {
 }
 
 
-expect_token :: proc(p: ^Parser, ty: TokenType) -> bool {
-	tok := next(p)
-	return tok.ty == ty
+expect_token :: proc(p: ^Parser, ty: TokenType) -> Err {
+	log("  Expect token ", ty)
+	tok := p.tokens[p.current]
+	if tok.ty == ty {
+		p.current += 1
+		return nil
+	} else {
+		return tprint("Expected token ", ty)
+	}
 }
 accept_token :: proc(p: ^Parser, ty: TokenType) -> bool {
+	if p.current >= len(p.tokens) {
+		return false
+	}
 	is_ty := p.tokens[p.current].ty == ty
 	if is_ty {
+		log("Accepted Token ", ty)
 		p.current += 1
 	}
 	return is_ty
 }
 
-expect_ident :: proc(p: ^Parser) -> (Ident, bool) {
+expect_ident :: proc(p: ^Parser) -> (Ident, Err) {
+	log("Expect Ident")
 	tok := next(p)
 	if tok.ty == .Ident {
-		return Ident{tok.meta.string}, true
+		return Ident{tok.meta.string}, nil
 	} else {
-		print("expected ident!")
-		return {}, false
+		return {}, "expected ident!"
 	}
 }
 accept_ident :: proc(p: ^Parser) -> (Ident, bool) {
+	if p.current >= len(p.tokens) {
+		return {}, false
+	}
 	cur := p.tokens[p.current]
 	if cur.ty == .Ident {
+		log("Accepted ident: ", cur.meta.string)
 		p.current += 1
 		return Ident{cur.meta.string}, true
 	}
@@ -52,34 +72,39 @@ accept_ident :: proc(p: ^Parser) -> (Ident, bool) {
 
 accept_left_paren_connected_to_last_token :: proc(p: ^Parser) -> bool {
 	cur := p.tokens[p.current]
-	return cur.ty == .LeftParen && cur.meta.bool
+	accepted := cur.ty == .LeftParen && cur.meta.bool
+	if accepted {
+		log("Accepted left paren connected to last token")
+		p.current += 1
+	}
+	return accepted
 }
 
 accept_left_bracket_connected_to_last_token :: proc(p: ^Parser) -> bool {
 	cur := p.tokens[p.current]
-	return cur.ty == .LeftBracket && cur.meta.bool
-}
-
-parse_ident :: proc(p: ^Parser) -> (ident: Ident, ok: bool) {
-	tok := next(p)
-	if tok.ty == .Ident {
-		return Ident{tok.meta.string}, true
-	} else {
-		return {}, false
+	accepted := cur.ty == .LeftBracket && cur.meta.bool
+	if accepted {
+		log("Accepted left bracket connected to last token")
+		p.current += 1
 	}
+	return accepted
 }
 
-
-expect_expressions :: proc(p: ^Parser) -> (expressions: []Expression, ok: bool) {
+expect_expressions :: proc(p: ^Parser) -> (expressions: []Expression, err: Err) {
+	log("Expect Expressions")
 	res: [dynamic]Expression
-	for !finished(p) {
-		expr := expect_expression(p) or_return
+	for (.CouldBeExpressionStart in TOKEN_TYPE_FLAGS[current(p).ty]) {
+		expr, err := expect_expression(p)
+		if err != nil {
+			return {}, err
+		}
 		append(&res, expr)
 	}
-	return res[:], true
+	return res[:], nil
 }
 
-expect_for_loop :: proc(p: ^Parser) -> (loop: ForLoop, ok: bool) {
+expect_for_loop :: proc(p: ^Parser) -> (loop: ForLoop, err: Err) {
+	log("Detected For Loop")
 	expect_token(p, .For) or_return
 	if accept_token(p, .LeftBrace) {
 		// infinite loop without condition
@@ -91,10 +116,11 @@ expect_for_loop :: proc(p: ^Parser) -> (loop: ForLoop, ok: bool) {
 		loop.body = expect_statements(p) or_return
 		expect_token(p, .RightBrace) or_return
 	}
-	return loop, true
+	return loop, nil
 }
 
-expect_if_block :: proc(p: ^Parser) -> (if_block: IfBlock, ok: bool) {
+expect_if_block :: proc(p: ^Parser) -> (if_block: IfBlock, err: Err) {
+	log("Expect If Block")
 	expect_token(p, .If) or_return
 	if_block.condition = expect_expression(p) or_return
 	expect_token(p, .LeftBrace) or_return
@@ -103,9 +129,11 @@ expect_if_block :: proc(p: ^Parser) -> (if_block: IfBlock, ok: bool) {
 	if accept_token(p, .Else) {
 		if current(p).ty == .If {
 			// if else block incoming:
+			log("    Detected Else If")
 			else_if_block := expect_if_block(p) or_return
 			if_block.else_block = new_clone(else_if_block)
 		} else {
+			log("    Detected Else")
 			// else block:
 			expect_token(p, .LeftBrace) or_return
 			else_body := expect_statements(p) or_return
@@ -113,27 +141,27 @@ expect_if_block :: proc(p: ^Parser) -> (if_block: IfBlock, ok: bool) {
 			expect_token(p, .RightBrace) or_return
 		}
 	}
-	return if_block, true
+	return if_block, nil
 }
 
 
-expression_as_assignment_place :: proc(expr: Expression) -> (place: AssignmentPlace, ok: bool) {
+expression_as_assignment_place :: proc(expr: Expression) -> (place: AssignmentPlace, err: Err) {
 	#partial switch place in expr {
 	case Ident:
-		return place, true
+		return place, nil
 	case IdentPath:
-		return place, true
+		return place, nil
 	case IndexOperation:
-		return place, true
+		return place, nil
 	}
-	return {}, false
+	return {}, tprint("expected assignment place, got: ", expr)
 }
 
 expect_assignment_declaration_or_expression :: proc(
 	p: ^Parser,
 ) -> (
 	statement: Statement,
-	ok: bool,
+	err: Err,
 ) {
 	first_expr := expect_expression(p) or_return
 	current_ty := current(p).ty
@@ -154,14 +182,19 @@ expect_assignment_declaration_or_expression :: proc(
 		if accept_token(p, check.token_ty) {
 			place := expression_as_assignment_place(first_expr) or_return
 			second_expr := expect_expression(p) or_return
-			return Statement(Assignment{place, check.assign_kind, second_expr}), true
+			return Statement(Assignment{place, check.assign_kind, second_expr}), nil
 		}
 	}
 
 	// maybe this is a declaration with ::, : Ty :, :=, : Ty or : Ty =  
 	if current_ty == .ColonColon || current_ty == .Colon || current_ty == .ColonAssign {
 		// place needs to be single ident for declaration now:
-		ident := first_expr.(Ident) or_return
+		ident: Ident = ---
+		if idnt, is_idnt := first_expr.(Ident); is_idnt {
+			ident = idnt
+		} else {
+			return {}, "first expression in declaration must be ident!"
+		}
 		decl := Declaration {
 			ident = ident,
 		}
@@ -184,25 +217,27 @@ expect_assignment_declaration_or_expression :: proc(
 			}
 		}
 		assert(decl.ty != nil || decl.value != nil)
-		return Statement(decl), true
+		return Statement(decl), nil
 	}
 	// just return the parsed expression, there seems to be no assignment or declaration here:
-	return Statement(first_expr), true
+	return Statement(first_expr), nil
 }
 
-expect_statement :: proc(p: ^Parser) -> (statement: Statement, ok: bool) {
+expect_statement :: proc(p: ^Parser) -> (statement: Statement, err: Err) {
+	log("Expect Statement")
 	current_ty := current(p).ty
 	if current_ty == .Break {
-		return Statement(BreakStatement{}), true
+		expect_token(p, .Break) or_return
+		return Statement(BreakStatement{}), nil
 	} else if current_ty == .Return {
 		return_stmt := expect_return_statement(p) or_return
-		return Statement(return_stmt), true
+		return Statement(return_stmt), nil
 	} else if current_ty == .For {
 		for_loop := expect_for_loop(p) or_return
-		return Statement(for_loop), true
+		return Statement(for_loop), nil
 	} else if current_ty == .If {
 		if_block := expect_if_block(p) or_return
-		return Statement(if_block), true
+		return Statement(if_block), nil
 	} else if current_ty == .Switch {
 		todo()
 	} else {
@@ -210,77 +245,50 @@ expect_statement :: proc(p: ^Parser) -> (statement: Statement, ok: bool) {
 	}
 }
 
-expect_statements :: proc(p: ^Parser) -> (statements: []Statement, ok: bool) {
+expect_statements :: proc(p: ^Parser) -> (statements: []Statement, err: Err) {
+	log("Expect Statements ------------------")
 	res: [dynamic]Statement
-	for finished(p) || !could_be_statement_start(current(p).ty) {
+	for (.CouldBeStatementStart in TOKEN_TYPE_FLAGS[current(p).ty]) {
 		expr := expect_statement(p) or_return
 		append(&res, expr)
 	}
-	return res[:], true
-}
-
-could_be_statement_start :: proc(ty: TokenType) -> bool {
-	#partial switch ty {
-	case .If,
-	     .For,
-	     .Switch,
-	     .Ident,
-	     .LitBool,
-	     .LitInt,
-	     .LitFloat,
-	     .LitString,
-	     .LitChar,
-	     .LitNone,
-	     .LeftParen,
-	     .LeftBracket,
-	     .LeftBrace,
-	     .Dot:
-		// Dot for enum variant   .Nice
-		return true
+	current_ty := current(p).ty
+	if .CouldBeAfterStatements not_in TOKEN_TYPE_FLAGS[current_ty] {
+		return res[:], tprint("Unexpected Token after a statement: '", current_ty, "'")
 	}
-	return false
+	log("End Statements ------------------")
+	return res[:], nil
 }
 
+expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
+	log("Expect Expression")
+	return expect_logical_or_or_higher(p)
 
-expect_expression :: proc(p: ^Parser) -> (expr: Expression, ok: bool) {
-	// expr_end :: proc(p: ^Parser) -> bool {
-	// 	return finished(p) || .CouldBeExpressionStart not_in TOKEN_TYPE_FLAGS[current(p).ty]
-	// }
-
-	// if comparison := parse_comparison(p); ok {
-	// 	// this is retarded, we cannot do parse_comparison to find an == somewhere and then go back the entire tree in case we dont find it...
-	// 	// we need a smarter parser here..
-	// }
-
-	// parse_comparison :: !
-
-	return {}, false
-
-
-	expect_logical_or_or_higher :: proc(p: ^Parser) -> (expr: Expression, ok: bool) {
+	expect_logical_or_or_higher :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		expr = expect_logical_and_or_higher(p) or_return
 		if current(p).ty == .Or {
 			next := expect_logical_or_or_higher(p) or_return
-			return Expression(LogicalOr{new_clone(expr), new_clone(next)}), true
+			return Expression(LogicalOr{new_clone(expr), new_clone(next)}), nil
 		} else {
-			return expr, true
+			return expr, nil
 		}
 	}
 
-	expect_logical_and_or_higher :: proc(p: ^Parser) -> (expr: Expression, ok: bool) {
+	expect_logical_and_or_higher :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		expr = expect_comparison_or_higher(p) or_return
 		if current(p).ty == .And {
 			next := expect_logical_and_or_higher(p) or_return
-			return Expression(LogicalOr{new_clone(expr), new_clone(next)}), true
+			return Expression(LogicalOr{new_clone(expr), new_clone(next)}), nil
 		} else {
-			return expr, true
+			return expr, nil
 		}
 	}
 
-	expect_comparison_or_higher :: proc(p: ^Parser) -> (expr: Expression, ok: bool) {
+	expect_comparison_or_higher :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		first := expect_add_or_sub_or_higher(p) or_return
 		if _, is_cmp := cmp_operator_token_ty_to_kind(current(p).ty); !is_cmp {
-			return first, true
+			print("is not comparision return other expr")
+			return first, nil
 		}
 
 		cmp_operator_token_ty_to_kind :: proc(
@@ -289,6 +297,7 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, ok: bool) {
 			kind: ComparisonKind,
 			is_cmp: bool,
 		) {
+			print("cmp_operator_token_ty_to_kind token ty:", ty)
 			#partial switch ty {
 			case .Greater:
 				return .Greater, true
@@ -306,112 +315,129 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, ok: bool) {
 			return {}, false
 		}
 		others: [dynamic]ComparisonElement
-		for kind, is_cmp := cmp_operator_token_ty_to_kind(current(p).ty); is_cmp; {
+		for {
+			kind, is_cmp := cmp_operator_token_ty_to_kind(current(p).ty)
+			if !is_cmp {
+				break
+			}
+			// comparison_operator
+			log("Comparition operator: ", current(p).ty, kind, is_cmp)
+			next(p)
 			next_expr := expect_add_or_sub_or_higher(p) or_return
 			append(&others, ComparisonElement{kind, next_expr})
 		}
-		return Expression(Comparison{first = new_clone(first), others = others[:]}), true
+		return Expression(Comparison{first = new_clone(first), others = others[:]}), nil
 	}
-	expect_add_or_sub_or_higher :: proc(p: ^Parser) -> (expr: Expression, ok: bool) {
+	expect_add_or_sub_or_higher :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		first := expect_mul_or_div_or_higher(p) or_return
 		if accept_token(p, .Add) {
 			second := expect_add_or_sub_or_higher(p) or_return
-			return Expression(MathOperation{.Add, new_clone(first), new_clone(second)}), true
+			return Expression(MathOperation{.Add, new_clone(first), new_clone(second)}), nil
 		} else if accept_token(p, .Sub) {
 			second := expect_add_or_sub_or_higher(p) or_return
-			return Expression(MathOperation{.Sub, new_clone(first), new_clone(second)}), true
+			return Expression(MathOperation{.Sub, new_clone(first), new_clone(second)}), nil
 		}
-		return first, true
+		return first, nil
 	}
-	expect_mul_or_div_or_higher :: proc(p: ^Parser) -> (expr: Expression, ok: bool) {
+	expect_mul_or_div_or_higher :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		first := expect_unary_like_or_higher(p) or_return
 		if accept_token(p, .Mul) {
 			second := expect_mul_or_div_or_higher(p) or_return
-			return Expression(MathOperation{.Mul, new_clone(first), new_clone(second)}), true
+			return Expression(MathOperation{.Mul, new_clone(first), new_clone(second)}), nil
 		} else if accept_token(p, .Div) {
 			second := expect_mul_or_div_or_higher(p) or_return
-			return Expression(MathOperation{.Div, new_clone(first), new_clone(second)}), true
+			return Expression(MathOperation{.Div, new_clone(first), new_clone(second)}), nil
 		}
-		return first, true
+		return first, nil
 	}
-	expect_unary_like_or_higher :: proc(p: ^Parser) -> (expr: Expression, ok: bool) {
+	expect_unary_like_or_higher :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		if accept_token(p, .Sub) {
 			// negative numeric expressions e.g. -2
 			first := expect_unary_like_or_higher(p) or_return
-			return NegateExpression(new_clone(first)), true
+			return NegateExpression(new_clone(first)), nil
 		} else if accept_token(p, .Not) {
 			// not operator e.g. !myfun()
 			first := expect_unary_like_or_higher(p) or_return
-			return NotExpression(new_clone(first)), true
+			return NotExpression(new_clone(first)), nil
 		} else {
 			// single value or parens around some expression, then check if function call or indexing directly behind:
 			single_value := expect_single_value(p) or_return
-			if accept_left_paren_connected_to_last_token(p) {
+			if finished(p) {
+				return single_value, nil
+			} else if accept_left_paren_connected_to_last_token(p) {
 				// function calls e.g. bar.foo(1 3+4 4) becomes {function: bar.foo, args: {1, 3+4, 4}} which might become {function: foo, args: {bar, 1, 3+4, 4}} later when resolving names.
 				args := expect_expressions(p) or_return
 				expect_token(p, .RightParen) or_return
-				return FunctionCall{new_clone(single_value), args}, true
+				return FunctionCall{new_clone(single_value), args}, nil
 			} else if accept_left_bracket_connected_to_last_token(p) {
 				index := expect_expression(p) or_return // todo: later support multiple operators in index
 				expect_token(p, .RightBracket) or_return
-				return IndexOperation{new_clone(single_value), new_clone(index)}, true
+				return IndexOperation{new_clone(single_value), new_clone(index)}, nil
 			} else {
-				return single_value, true
+				return single_value, nil
 			}
 		}
 	}
-	expect_single_value :: proc(p: ^Parser) -> (val: Expression, ok: bool) {
-		if finished(p) || .CouldBeExpressionStart not_in TOKEN_TYPE_FLAGS[current(p).ty] {
-			return {}, false
+	expect_single_value :: proc(p: ^Parser) -> (val: Expression, err: Err) {
+		log("    Detected single value")
+		if finished(p) {
+			return {}, "unexpected end of parser"
+		} else if .CouldBeExpressionStart not_in TOKEN_TYPE_FLAGS[current(p).ty] {
+			print_tokens(p.tokens[p.current:])
+			print(p.current, p.tokens[p.current])
+			return {}, tprint("token is not a valid start of an expression: ", current(p).ty)
 		}
 		tok := next(p)
 		#partial switch tok.ty {
 		case .LitBool:
-			return LitBool{tok.meta.bool}, true
+			return LitBool{tok.meta.bool}, nil
 		case .LitInt:
-			return LitInt{tok.meta.int}, true
+			return LitInt{tok.meta.int}, nil
 		case .LitFloat:
-			return LitFloat{tok.meta.float}, true
+			return LitFloat{tok.meta.float}, nil
 		case .LitChar:
-			return LitChar{tok.meta.char}, true
+			return LitChar{tok.meta.char}, nil
 		case .LitString:
-			return LitString{tok.meta.string}, true
+			return LitString{tok.meta.string}, nil
 		case .LitNone:
-			return LitNone{}, true
+			return LitNone{}, nil
 		case .Ident:
 			ident := Ident{tok.meta.string}
 			if current(p).ty != .Dot {
-				return ident, true
+				return ident, nil
 			} else {
 				path: [dynamic]Ident = {ident}
 				for accept_token(p, .Dot) {
 					next_ident := expect_ident(p) or_return
 					append(&path, next_ident)
 				}
-				return IdentPath(path[:]), true
+				return IdentPath(path[:]), nil
 			}
 		case .Enum:
 			// enum {High, Low, Mid}
-			enum_decl: EnumDecl
 			expect_token(p, .LeftBrace) or_return
 			first_variant := expect_ident(p) or_return // must have at least 1 variant
 			variants: [dynamic]Ident = {first_variant}
-			for ident, is_ident := accept_ident(p); is_ident; {
+			for {
+				ident, is_ident := accept_ident(p)
+				if !is_ident {
+					break
+				}
 				append(&variants, ident)
 			}
 			expect_token(p, .RightBrace) or_return
-			return enum_decl, true
+			return EnumDecl{variants[:]}, nil
 		case .LeftParen:
 			// (3+2*foo.bar())
 			expr := expect_expression(p) or_return
 			expect_token(p, .RightParen) or_return
-			return expr, true
+			return expr, nil
 		case .LeftBracket:
 			// [3,4,5]
 			// could also be type e.g. [int] or [{s: int, f: float}] or [enum{Red, Black}]
 			values := expect_expressions(p) or_return
 			expect_token(p, .RightBracket) or_return
-			return LitArray{values}, true
+			return LitArray{values}, nil
 		case .LeftBrace:
 			// { age: int, name: string} 
 			// { foo: 2+4, "Hello": 34, "Noob": 40404 }
@@ -431,21 +457,22 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, ok: bool) {
 }
 
 
-expect_return_statement :: proc(p: ^Parser) -> (return_stmt: ReturnStatement, ok: bool) {
+expect_return_statement :: proc(p: ^Parser) -> (return_stmt: ReturnStatement, err: Err) {
+	log("Expect Return statement")
 	expect_token(p, .Return) or_return
 	if !finished(p) && has_flag(current(p).ty, .CouldBeExpressionStart) {
 		return_stmt.value = expect_expression(p) or_return
 	}
-	return return_stmt, true
+	return return_stmt, nil
 }
-parse :: proc(tokens: []Token) -> (mod: Module, ok: bool) {
+parse :: proc(tokens: []Token) -> (mod: Module, err: Err) {
 	init_token_type_flags()
 	p := Parser {
 		tokens  = tokens,
 		current = 0,
 	}
 	statements := expect_statements(&p) or_return
-	return Module{statements = statements}, true
+	return Module{statements = statements}, nil
 }
 
 Module :: struct {
@@ -527,7 +554,7 @@ Statement :: union #no_nil {
 
 BreakStatement :: struct {}
 ReturnStatement :: struct {
-	value: Expression,
+	value: Maybe(Expression),
 }
 
 IfBlock :: struct {
@@ -637,6 +664,7 @@ TokenFlag :: enum {
 	CouldBeStatementStart,
 	CouldBeExpressionStart,
 	IsComparisonOperator,
+	CouldBeAfterStatements,
 }
 
 
@@ -667,6 +695,8 @@ init_token_type_flags :: proc() {
 			.LeftParen,
 			.LeftBracket,
 			.LeftBrace,
+			.Break,
+			.Return,
 		},
 	)
 	set(
@@ -684,9 +714,11 @@ init_token_type_flags :: proc() {
 			.LeftBrace,
 			.Sub,
 			.Not,
+			.Enum,
 		},
 	)
 	set(.IsComparisonOperator, {.Greater, .GreaterEqual, .Less, .LessEqual, .Equal, .NotEqual})
+	set(.CouldBeAfterStatements, {.Eof, .RightBrace})
 }
 
 
