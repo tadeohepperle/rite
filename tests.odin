@@ -4,36 +4,50 @@ import "core:strings"
 /*
 	
 
+// working:
+a := 3
+for a <=4 {
+	print(34*a)
+	a += 1
+	if a ==2 { break }
+}
+if true {
+	a = 4
+	3 + 4 -a
+} else if true {
+	print("hello")
+	print("nice")
+	foo.bar.zoom(2,3,4.4)("Wtf")
+} else {
+	3 + 5
+}
+3 + 4 + 6
+
+foo = 7-6*2+89/11
+
+FOO :: enum {Black, Red}
+BAR := 3
 
 */
 
 main :: proc() {
 	source := `
-	a := 3
-	for a <=4 {
-		print(34*a)
-		a += 1
-		if a ==2 { break }
-	}
+		my_val := {hello: 3 + 45, string: int}
 
-	if true {
-		a = 4
-		3 + 4 -a
-	} else if true {
-		print("hello")
-		print("nice")
-		foo.bar.zoom(2,3,4.4)("Wtf")
-	} else {
-		3 + 5
-	}
+		City :: enum {Ohio, Indiana, Colorado}
+		Person :: {age: int, name: string, {string,string}: City}
 
-	3 + 4 + 6
-	
-	foo = 7-6*2+89/11
-	
-	FOO :: enum {Black, Red}
+		my_var: {age: int, city: City}
 
-	BAR := 3
+		a:= {"Hello", "you", "are"}
+		a:= ["Hello", "you", "are"]
+
+		i:= 10
+		for i < 30 {
+			i.to_float().print()
+			i +=3
+		}
+
 	`
 	tokens_arr, err := tokenize(source)
 	tokens := tokens_arr[:]
@@ -70,9 +84,9 @@ statement_to_string :: proc(stmnt: Statement, indent: string = "") -> string {
 	switch s in stmnt {
 	case Assignment:
 		place := expression_to_string(assignment_place_as_expression(s.place))
-		assign := assignment_kind_to_string(s.kind)
+		assign := assignment_kind_to_long_string(s.kind)
 		value := expression_to_string(s.value)
-		return tprint(indent, place, " ", assign, " ", value)
+		return tprint(indent, assign, "(", place, ", ", value, ")")
 	case Declaration:
 		name := s.ident.name
 		ty := ""
@@ -85,15 +99,15 @@ statement_to_string :: proc(stmnt: Statement, indent: string = "") -> string {
 		}
 		switch s.kind {
 		case .ConstExplicit:
-			return tprint(indent, name, " : ", ty, " : ", value)
-		case .RuntimeExplicit:
-			return tprint(indent, name, " : ", ty, " = ", value)
-		case .RuntimeExplicitDefault:
-			return tprint(indent, name, " : ", ty)
+			return tprint(indent, "DECLARE_CONST(", name, ", ", ty, ", ", value, ")")
 		case .ConstInferred:
-			return tprint(indent, name, " :: ", value)
+			return tprint(indent, "DECLARE_CONST(", name, ", INFERRED, ", value, ")")
+		case .RuntimeExplicit:
+			return tprint(indent, "DECLARE(", name, ", ", ty, ", ", value, ")")
+		case .RuntimeExplicitDefault:
+			return tprint(indent, "DECLARE(", name, ", ", ty, ", DEFAULT)")
 		case .RuntimeInferred:
-			return tprint(indent, name, " := ", value)
+			return tprint(indent, "DECLARE(", name, ", INFERRED, ", value, ")")
 		}
 	case Expression:
 		return tprint(indent, expression_to_string(s))
@@ -243,7 +257,20 @@ expression_to_string :: proc(expr: Expression) -> string {
 		strings.write_quoted_rune(&builder, ex.value)
 		return strings.to_string(builder)
 	case LitStruct:
-		todo()
+		builder := strings.builder_make(context.temp_allocator)
+		b := &builder
+		write(b, "{ ")
+		for field, i in ex.fields {
+			if i != 0 {
+				write(b, ", ")
+			}
+			if name, is_named := field.name.(^Expression); is_named {
+				write(b, expression_to_string(name^), ": ")
+			}
+			write(b, expression_to_string(field.value^))
+		}
+		write(b, " }")
+		return strings.to_string(builder)
 	case LitArray:
 		builder := strings.builder_make(context.temp_allocator)
 		b := &builder
@@ -287,6 +314,21 @@ assignment_kind_to_string :: proc(kind: AssignmentKind) -> string {
 		return "*="
 	case .DivAssign:
 		return "/="
+	}
+	unreachable()
+}
+assignment_kind_to_long_string :: proc(kind: AssignmentKind) -> string {
+	switch kind {
+	case .Assign:
+		return "ASSIGN"
+	case .AddAssign:
+		return "ADD_ASSIGN"
+	case .SubAssign:
+		return "SUB_ASSIGN"
+	case .MulAssign:
+		return "MUL_ASSIGN"
+	case .DivAssign:
+		return "DIV_ASSIGN"
 	}
 	unreachable()
 }

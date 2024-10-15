@@ -361,6 +361,10 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 			return NotExpression(new_clone(first)), nil
 		} else {
 			// single value or parens around some expression, then check if function call or indexing directly behind:
+
+			// TODO: check for continuation of the expression via .Dot
+			// - either accesses some value like so:     age := get_person(3).age
+			// - or calls a function with dot noration:  10.mul(3).print()
 			single_value := expect_single_value(p) or_return
 			if finished(p) {
 				return single_value, nil
@@ -439,21 +443,42 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 			expect_token(p, .RightBracket) or_return
 			return LitArray{values}, nil
 		case .LeftBrace:
-			// { age: int, name: string} 
-			// { foo: 2+4, "Hello": 34, "Noob": 40404 }
-			// could also be tuple:
-			// what about named struct literals?   Foo{int: i, var: "3ha"} or Foo {int: i, var: "3ha"}
-			// // todo: struct 
-			// we probably need to be MUCH more context sensitive if the language should work with so little syntax...
-			// for example we need to say if its capitalized, its a type, if its lowercase its a variable or function and so on...
-			// if it starts with underscore it is private
-			todo()
+			struct_lit := expect_inside_of_struct_literal(p) or_return
+			expect_token(p, .RightBrace) or_return
+			return struct_lit, nil
+		// { age: int, name: string} 
+		// { foo: 2+4, "Hello": 34, "Noob": 40404 }
+		// could also be tuple:
+		// what about named struct literals?   Foo{int: i, var: "3ha"} or Foo {int: i, var: "3ha"}
+		// // todo: struct 
+		// we probably need to be MUCH more context sensitive if the language should work with so little syntax...
+		// for example we need to say if its capitalized, its a type, if its lowercase its a variable or function and so on...
+		// if it starts with underscore it is private
 		}
 		panic(
 			"no token matched start of expression, this case should have been handled in .CouldBeExpressionStart not_in TOKEN_TYPE_FLAGS[current(p).ty]",
 		)
 	}
+}
 
+// e.g. examples:
+expect_inside_of_struct_literal :: proc(p: ^Parser) -> (lit_struct: LitStruct, err: Err) {
+	fields: [dynamic]Field
+	for {
+		if current(p).ty == .RightBrace {
+			break
+		}
+		val_or_field_name := expect_expression(p) or_return
+		if accept_token(p, .Colon) {
+			// named field
+			value := expect_expression(p) or_return
+			append(&fields, Field{name = new_clone(val_or_field_name), value = new_clone(value)})
+		} else {
+			// unnamed field
+			append(&fields, Field{name = nil, value = new_clone(val_or_field_name)})
+		}
+	}
+	return LitStruct{fields[:]}, nil
 }
 
 
@@ -498,7 +523,7 @@ Expression :: union #no_nil {
 	LitFloat,
 	LitString,
 	LitChar,
-	LitStruct,
+	LitStruct, // this could be a struct definition or a value. e.g. { age: Int, name: String } vs. {age: }
 	LitArray,
 	EnumDecl,
 	LitUnionDecl,
@@ -622,13 +647,15 @@ LitChar :: struct {
 	value: rune,
 }
 LitNone :: struct {}
+
 LitStruct :: struct {
-	fields: []Expression,
+	fields: []Field,
 	// todo: map literals in struct, e.g. {name: "Tadeo", 3: .Nice, 6: .Large}
+	// for a type that is {name: string, int: MyEnum}
 }
 Field :: struct {
-	name:  Ident,
-	value: Expression,
+	name:  Maybe(^Expression), // expression? or ident??? What about maps like { {2,3}: "Hello", {3,4}: "What"  }
+	value: ^Expression,
 }
 LitTuple :: struct {
 	values: []Expression,
