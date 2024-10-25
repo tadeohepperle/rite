@@ -28,11 +28,9 @@ foo = 7-6*2+89/11
 FOO :: enum {Black, Red}
 BAR := 3
 
-*/
 
-main :: proc() {
-	source := `
-		my_val := {hello: 3 + 45, string: int}
+// also okay:
+	my_val := {hello: 3 + 45 * 2, string: int}
 
 		City :: enum {Ohio, Indiana, Colorado}
 		Person :: {age: int, name: string, {string,string}: City}
@@ -44,10 +42,39 @@ main :: proc() {
 
 		i:= 10
 		for i < 30 {
-			i.to_float().print()
+			// i.to_float().print()
 			i +=3
+			for j < 400 {
+				print("Hello", 12, "nice")
+			}
+			if true {
+				a = 4
+				3 + 4 -a
+			} else if true {
+				print("hello")
+				print("nice")
+				foo.bar.zoom(2,3,4.4)("Wtf")
+			} else {
+				3 + 5
+			}
 		}
 
+		i:= None
+*/
+
+main :: proc() {
+	source := `
+	print({"Hello"}, 1, 4)
+	print({x: 4}, 4) 
+	// foo :: () {
+	// 	print("Hello")
+	// }
+	a:= b.foo.bar
+	b:= (b.foo).bar
+	// c:= b.(foo.bar) // should error!
+
+	next : {age: int} = foo.arr[3].bar.zaa()
+	a: int = 3 
 	`
 	tokens_arr, err := tokenize(source)
 	tokens := tokens_arr[:]
@@ -195,7 +222,7 @@ expression_to_string :: proc(expr: Expression) -> string {
 		}
 		op := comparison_kind_to_string(ex.others[0].kind)
 		return two_arg_expr_to_string(op, ex.first^, ex.others[0].expr)
-	case MathOperation:
+	case MathOp:
 		op := ""
 		switch ex.kind {
 		case .Add:
@@ -212,7 +239,7 @@ expression_to_string :: proc(expr: Expression) -> string {
 		return tprint("MINUS(", expression_to_string(ex), ")")
 	case NotExpression:
 		return tprint("NOT(", expression_to_string(ex), ")")
-	case FunctionCall:
+	case CallOp:
 		function := expression_to_string(ex.function^)
 		builder := strings.builder_make(context.temp_allocator)
 		b := &builder
@@ -222,22 +249,15 @@ expression_to_string :: proc(expr: Expression) -> string {
 		}
 		write(b, ")")
 		return strings.to_string(builder)
-	case IndexOperation:
+	case IndexOp:
 		place := expression_to_string(ex.place^)
 		index := expression_to_string(ex.index^)
-		tprint("INDEX(", place, ", ", index, ")")
+		return tprint("INDEX(", place, ", ", index, ")")
 	case Ident:
 		return ex.name
-	case IdentPath:
-		assert(len(ex) >= 1)
-		builder := strings.builder_make(context.temp_allocator)
-		for v, i in ex {
-			if i != 0 {
-				write(&builder, ".")
-			}
-			write(&builder, v.name)
-		}
-		return strings.to_string(builder)
+	case AccessOp:
+		place := expression_to_string(ex.parent^)
+		return tprint(place, ".", ex.ident.name)
 	case LitBool:
 		if ex.value {
 			return "true"
@@ -300,7 +320,7 @@ expression_to_string :: proc(expr: Expression) -> string {
 	case LitNone:
 		return "None"
 	}
-	return "UnhandledExpression"
+	return tprint("UnhandledExpression ", expr)
 }
 assignment_kind_to_string :: proc(kind: AssignmentKind) -> string {
 	switch kind {
@@ -335,11 +355,11 @@ assignment_kind_to_long_string :: proc(kind: AssignmentKind) -> string {
 
 assignment_place_as_expression :: proc(place: AssignmentPlace) -> Expression {
 	switch place in place {
-	case IdentPath:
+	case AccessOp:
 		return place
 	case Ident:
 		return place
-	case IndexOperation:
+	case IndexOp:
 		return place
 	}
 	unreachable()

@@ -17,12 +17,20 @@ Token :: struct {
 }
 
 TokenMetadata :: struct #raw_union {
-	int:    i64,
-	float:  f64,
-	string: string,
-	bool:   bool, // is true for left parens and bracket if next to last token without whitespace in between: one expression: calc(3+3), these are two expressions: calc (3+3)
-	char:   rune,
+	int:                     i64,
+	float:                   f64,
+	string:                  string,
+	bool:                    bool,
+	char:                    rune,
+	connected_to_last_token: ConnectedToLastToken, // is true for left parens and bracket if next to last token without whitespace in between: one expression: calc(3+3), these are two expressions: calc (3+3)
 }
+
+// true if no whitespace between this and the last token
+// only used for '(' and '[' characters to decide if they should bind to the character before (fn call, indexing)
+// or if they start a new expression (parents around calculation, list expression).
+// This is necessary because the language does not have commas, semicolons or line breaks as seperators!
+ConnectedToLastToken :: distinct bool
+
 
 tokens_to_string :: proc(tokens: []Token) -> string {
 	return ""
@@ -60,8 +68,8 @@ TokenType :: enum {
 	GreaterEqual, // >=
 	LessEqual, // <=
 	Equal, // ==
-	And, // &&
-	Or, // ||
+	And, // &&, and
+	Or, // ||, or
 	Arrow, // ->
 	Is, // is
 	In, // in
@@ -232,6 +240,10 @@ ident_or_keyword_token :: proc(name: string) -> Token {
 		return token(.For)
 	case "dyn":
 		return token(.Dyn)
+	case "and":
+		return token(.And)
+	case "or":
+		return token(.Or)
 	case "else":
 		return token(.Else)
 	case "enum":
@@ -358,6 +370,7 @@ scan_token :: proc(s: ^Scanner) -> Token {
 			advance(s)
 			return token(.DivAssign)
 		} else if s.peek.ty == .Slash {
+			// Double Slash is a comment. Skip over the comment line
 			// skip everything until end of line:
 			advance(s)
 			for {
@@ -410,11 +423,11 @@ scan_token :: proc(s: ^Scanner) -> Token {
 	case .RightBrace:
 		return token(.RightBrace)
 	case .LeftBracket:
-		return Token{.LeftBracket, {bool = !s.white_space_since_last_token}}
+		return Token{.LeftBracket, {connected_to_last_token = !s.white_space_since_last_token}}
 	case .RightBracket:
 		return token(.RightBracket)
 	case .LeftParen:
-		return Token{.LeftParen, {bool = !s.white_space_since_last_token}}
+		return Token{.LeftParen, {connected_to_last_token = !s.white_space_since_last_token}}
 	case .RightParen:
 		return token(.RightParen)
 	}

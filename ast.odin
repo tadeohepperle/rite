@@ -25,7 +25,6 @@ current :: proc(p: ^Parser) -> (tok: Token) {
 	return p.tokens[p.current]
 }
 
-
 expect_token :: proc(p: ^Parser, ty: TokenType) -> Err {
 	log("  Expect token ", ty)
 	tok := p.tokens[p.current]
@@ -72,7 +71,7 @@ accept_ident :: proc(p: ^Parser) -> (Ident, bool) {
 
 accept_left_paren_connected_to_last_token :: proc(p: ^Parser) -> bool {
 	cur := p.tokens[p.current]
-	accepted := cur.ty == .LeftParen && cur.meta.bool
+	accepted := cur.ty == .LeftParen && bool(cur.meta.connected_to_last_token)
 	if accepted {
 		log("Accepted left paren connected to last token")
 		p.current += 1
@@ -82,7 +81,7 @@ accept_left_paren_connected_to_last_token :: proc(p: ^Parser) -> bool {
 
 accept_left_bracket_connected_to_last_token :: proc(p: ^Parser) -> bool {
 	cur := p.tokens[p.current]
-	accepted := cur.ty == .LeftBracket && cur.meta.bool
+	accepted := cur.ty == .LeftBracket && bool(cur.meta.connected_to_last_token)
 	if accepted {
 		log("Accepted left bracket connected to last token")
 		p.current += 1
@@ -149,9 +148,9 @@ expression_as_assignment_place :: proc(expr: Expression) -> (place: AssignmentPl
 	#partial switch place in expr {
 	case Ident:
 		return place, nil
-	case IdentPath:
+	case AccessOp:
 		return place, nil
-	case IndexOperation:
+	case IndexOp:
 		return place, nil
 	}
 	return {}, tprint("expected assignment place, got: ", expr)
@@ -209,7 +208,7 @@ expect_assignment_declaration_or_expression :: proc(
 			if accept_token(p, .Colon) {
 				decl.kind = .ConstExplicit
 				decl.value = expect_expression(p) or_return
-			} else if accept_token(p, .Equal) {
+			} else if accept_token(p, .Assign) {
 				decl.kind = .RuntimeExplicit
 				decl.value = expect_expression(p) or_return
 			} else {
@@ -332,10 +331,10 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		first := expect_mul_or_div_or_higher(p) or_return
 		if accept_token(p, .Add) {
 			second := expect_add_or_sub_or_higher(p) or_return
-			return Expression(MathOperation{.Add, new_clone(first), new_clone(second)}), nil
+			return Expression(MathOp{.Add, new_clone(first), new_clone(second)}), nil
 		} else if accept_token(p, .Sub) {
 			second := expect_add_or_sub_or_higher(p) or_return
-			return Expression(MathOperation{.Sub, new_clone(first), new_clone(second)}), nil
+			return Expression(MathOp{.Sub, new_clone(first), new_clone(second)}), nil
 		}
 		return first, nil
 	}
@@ -343,10 +342,10 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		first := expect_unary_like_or_higher(p) or_return
 		if accept_token(p, .Mul) {
 			second := expect_mul_or_div_or_higher(p) or_return
-			return Expression(MathOperation{.Mul, new_clone(first), new_clone(second)}), nil
+			return Expression(MathOp{.Mul, new_clone(first), new_clone(second)}), nil
 		} else if accept_token(p, .Div) {
 			second := expect_mul_or_div_or_higher(p) or_return
-			return Expression(MathOperation{.Div, new_clone(first), new_clone(second)}), nil
+			return Expression(MathOp{.Div, new_clone(first), new_clone(second)}), nil
 		}
 		return first, nil
 	}
@@ -365,21 +364,32 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 			// TODO: check for continuation of the expression via .Dot
 			// - either accesses some value like so:     age := get_person(3).age
 			// - or calls a function with dot noration:  10.mul(3).print()
-			single_value := expect_single_value(p) or_return
+			expr = expect_single_value(p) or_return
 			if finished(p) {
-				return single_value, nil
-			} else if accept_left_paren_connected_to_last_token(p) {
-				// function calls e.g. bar.foo(1 3+4 4) becomes {function: bar.foo, args: {1, 3+4, 4}} which might become {function: foo, args: {bar, 1, 3+4, 4}} later when resolving names.
-				args := expect_expressions(p) or_return
-				expect_token(p, .RightParen) or_return
-				return FunctionCall{new_clone(single_value), args}, nil
-			} else if accept_left_bracket_connected_to_last_token(p) {
-				index := expect_expression(p) or_return // todo: later support multiple operators in index
-				expect_token(p, .RightBracket) or_return
-				return IndexOperation{new_clone(single_value), new_clone(index)}, nil
-			} else {
-				return single_value, nil
+				return expr, nil
 			}
+
+			for {
+				if accept_token(p, .Dot) {
+					ident := expect_ident(p) or_return
+					parent := new_clone(expr)
+					expr = AccessOp{parent, ident}
+				} else if accept_left_paren_connected_to_last_token(p) {
+					args := expect_expressions(p) or_return
+					expect_token(p, .RightParen) or_return
+					fn_expr := new_clone(expr)
+					expr = CallOp{fn_expr, args}
+				} else if accept_left_bracket_connected_to_last_token(p) {
+					index := expect_expression(p) or_return // todo: later support multiple operators in index
+					expect_token(p, .RightBracket) or_return
+					place := new_clone(expr)
+					expr = IndexOp{place, new_clone(index)}
+				} else {
+					break
+				}
+
+			}
+			return expr, nil
 		}
 	}
 	expect_single_value :: proc(p: ^Parser) -> (val: Expression, err: Err) {
@@ -407,16 +417,7 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 			return LitNone{}, nil
 		case .Ident:
 			ident := Ident{tok.meta.string}
-			if current(p).ty != .Dot {
-				return ident, nil
-			} else {
-				path: [dynamic]Ident = {ident}
-				for accept_token(p, .Dot) {
-					next_ident := expect_ident(p) or_return
-					append(&path, next_ident)
-				}
-				return IdentPath(path[:]), nil
-			}
+			return ident, nil
 		case .Enum:
 			// enum {High, Low, Mid}
 			expect_token(p, .LeftBrace) or_return
@@ -509,15 +510,15 @@ Expression :: union #no_nil {
 	LogicalOr,
 	LogicalAnd,
 	Comparison,
-	MathOperation, // 583/3==4+32    a.foo[3] > - 4   a > b > c
+	MathOp, // 583/3==4+32    a.foo[3] > - 4   a > b > c
 	// other high precedence operations
 	NegateExpression,
 	NotExpression,
-	FunctionCall,
-	IndexOperation,
+	CallOp,
+	IndexOp,
+	AccessOp,
 	// simple expressions:
 	Ident,
-	IdentPath,
 	LitBool,
 	LitInt,
 	LitFloat,
@@ -539,7 +540,7 @@ LogicalOr :: struct {
 	first:  ^Expression,
 	second: ^Expression,
 }
-MathOperation :: struct {
+MathOp :: struct {
 	kind:   MathOpKind,
 	first:  ^Expression,
 	second: ^Expression,
@@ -606,9 +607,9 @@ Assignment :: struct {
 	value: Expression,
 }
 AssignmentPlace :: union #no_nil {
-	IdentPath,
 	Ident,
-	IndexOperation,
+	AccessOp,
+	IndexOp,
 }
 AssignmentKind :: enum {
 	Assign,
@@ -619,14 +620,18 @@ AssignmentKind :: enum {
 }
 NotExpression :: distinct ^Expression
 NegateExpression :: distinct ^Expression
-IdentPath :: distinct []Ident
-FunctionCall :: struct {
+// IdentPath :: distinct []Ident
+CallOp :: struct {
 	function: ^Expression,
 	args:     []Expression, // todo: named args
 }
-IndexOperation :: struct {
+IndexOp :: struct {
 	place: ^Expression,
 	index: ^Expression, // todo: support df["col1", "col3"] with []Expression
+}
+AccessOp :: struct {
+	parent: ^Expression,
+	ident:  Ident,
 }
 Ident :: struct {
 	name: string,
