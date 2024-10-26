@@ -302,7 +302,7 @@ scan_token :: proc(s: ^Scanner) -> Token {
 	case .SingleQuote:
 		after_char := after_peek(s^)
 		if after_char.ty != .SingleQuote { 	// todo: this does not work for chars like '\n' or '\t', change later to include escaped characters
-			return token_error("invalid char literal")
+			return error_token("invalid char literal")
 		}
 		token_char := s.peek.ch
 		advance(s) // skip over char
@@ -410,7 +410,7 @@ scan_token :: proc(s: ^Scanner) -> Token {
 		if s.peek.ty == .Ampersand {
 			return token(.And)
 		} else {
-			return token_error("Did you mean '&&' ?")
+			return error_token("Did you mean '&&' ?")
 		}
 	case .Bang:
 		if s.peek.ty == .Equal {
@@ -431,14 +431,14 @@ scan_token :: proc(s: ^Scanner) -> Token {
 	case .RightParen:
 		return token(.RightParen)
 	}
-	return token_error("unexpected")
+	return error_token("unexpected")
 }
 
 token :: #force_inline proc(ty: TokenType) -> Token {
 	return Token{ty = ty, meta = {}}
 }
 
-token_error :: #force_inline proc(err: string) -> Token {
+error_token :: #force_inline proc(err: string) -> Token {
 	return Token{ty = .Error, meta = {string = err}}
 }
 

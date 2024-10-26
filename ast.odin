@@ -14,6 +14,12 @@ log :: proc(args: ..any) {
 	fmt.println(..args)
 }
 
+
+current :: proc(p: ^Parser) -> (tok: Token) {
+	return p.tokens[p.current]
+}
+
+
 next :: proc(p: ^Parser) -> (tok: Token) {
 	tok = p.tokens[p.current]
 	p.current += 1
@@ -21,8 +27,24 @@ next :: proc(p: ^Parser) -> (tok: Token) {
 	return tok
 }
 
-current :: proc(p: ^Parser) -> (tok: Token) {
-	return p.tokens[p.current]
+skip :: #force_inline proc(p: ^Parser) {
+	p.current += 1
+}
+
+peek :: proc(p: ^Parser) -> (tok: Token) {
+	idx := p.current + 1
+	if idx >= len(p.tokens) {
+		return error_token("out of bounds")
+	}
+	return p.tokens[idx]
+}
+
+peek_2 :: proc(p: ^Parser) -> (tok: Token) {
+	idx := p.current + 2
+	if idx >= len(p.tokens) {
+		return error_token("out of bounds")
+	}
+	return p.tokens[idx]
 }
 
 expect_token :: proc(p: ^Parser, ty: TokenType) -> Err {
@@ -90,16 +112,27 @@ accept_left_bracket_connected_to_last_token :: proc(p: ^Parser) -> bool {
 }
 
 expect_expressions :: proc(p: ^Parser) -> (expressions: []Expression, err: Err) {
-	log("Expect Expressions")
 	res: [dynamic]Expression
+	_expect_expressions(p, &res) or_return
+	return res[:], nil
+}
+
+
+_expect_expressions :: #force_inline proc(
+	p: ^Parser,
+	expressions: ^[dynamic]Expression,
+) -> (
+	err: Err,
+) {
+	log("Expect Expressions")
 	for (.CouldBeExpressionStart in TOKEN_TYPE_FLAGS[current(p).ty]) {
 		expr, err := expect_expression(p)
 		if err != nil {
-			return {}, err
+			return err
 		}
-		append(&res, expr)
+		append(expressions, expr)
 	}
-	return res[:], nil
+	return nil
 }
 
 expect_for_loop :: proc(p: ^Parser) -> (loop: ForLoop, err: Err) {
@@ -433,10 +466,53 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 			expect_token(p, .RightBrace) or_return
 			return EnumDecl{variants[:]}, nil
 		case .LeftParen:
-			// (3+2*foo.bar())
-			expr := expect_expression(p) or_return
-			expect_token(p, .RightParen) or_return
-			return expr, nil
+			// there are 3 cases now: 
+			// case 1: a function type:       ( TYPE*  ) -> TYPE
+			// case 2: a function definition: ( [name: TYPE]*  ) [-> TYPE]? { STATEMENT* }
+			// case 3: a paranthesized expression: (EXPRESSION)
+
+			// case 2 always starts by IDENT and then a COLON, which can never be an expression, so this is easy to see.
+			// it is only case 3, if ther is a single expression and after the `)` NO `->`. Otherwise assume this is a function type
+
+			this := current(p)
+			next := peek(p)
+			if this.ty == .Ident && next.ty == .Colon {
+				// parse a function definition
+				// expect_function_def_arguments ()
+				fun_def: FunctionDefinition
+				fun_def.args = expect_function_definition_args(p) or_return
+				expect_token(p, .RightParen) or_return
+				// return type arrow is optional, if not present -> None is assumed.
+
+				if accept_token(p, .Arrow) {
+					return_type := expect_expression(p) or_return
+					fun_def.return_type = new_clone(return_type)
+				}
+				expect_token(p, .LeftBrace) or_return
+				fun_def.body = expect_statements(p) or_return
+				expect_token(p, .RightBrace) or_return
+				return fun_def, nil
+			} else {
+				expr := expect_expression(p) or_return
+				this = current(p)
+				next = peek(p)
+				if this.ty == .RightParen && next.ty != .Arrow {
+					// expression in parentheses
+					skip(p) // skip over the closing .RightParen
+					return expr, nil
+				} else {
+					// function type/signature
+					// parse the rest of the expressions in the arg type list
+					arg_types: [dynamic]Expression = {expr}
+					_expect_expressions(p, &arg_types) or_return
+					expect_token(p, .RightParen)
+					expect_token(p, .Arrow) or_return
+					return_type := expect_expression(p) or_return
+					function_signature := FunctionSignature{arg_types[:], new_clone(return_type)}
+					return function_signature, nil
+				}
+			}
+			unreachable()
 		case .LeftBracket:
 			// [3,4,5]
 			// could also be type e.g. [int] or [{s: int, f: float}] or [enum{Red, Black}]
@@ -462,9 +538,23 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 	}
 }
 
+expect_function_definition_args :: proc(p: ^Parser) -> (args: []FunctionArg, err: Err) {
+	args_list: [dynamic]FunctionArg
+	for {
+		if current(p).ty == .RightParen {
+			break
+		}
+		name := expect_ident(p) or_return
+		expect_token(p, .Colon) or_return
+		ty := expect_expression(p) or_return
+		append(&args_list, FunctionArg{name, ty})
+	}
+	return args_list[:], nil
+}
+
 // e.g. examples:
 expect_inside_of_struct_literal :: proc(p: ^Parser) -> (lit_struct: LitStruct, err: Err) {
-	fields: [dynamic]Field
+	fields: [dynamic]StructField
 	for {
 		if current(p).ty == .RightBrace {
 			break
@@ -473,10 +563,13 @@ expect_inside_of_struct_literal :: proc(p: ^Parser) -> (lit_struct: LitStruct, e
 		if accept_token(p, .Colon) {
 			// named field
 			value := expect_expression(p) or_return
-			append(&fields, Field{name = new_clone(val_or_field_name), value = new_clone(value)})
+			append(
+				&fields,
+				StructField{name = new_clone(val_or_field_name), value = new_clone(value)},
+			)
 		} else {
 			// unnamed field
-			append(&fields, Field{name = nil, value = new_clone(val_or_field_name)})
+			append(&fields, StructField{name = nil, value = new_clone(val_or_field_name)})
 		}
 	}
 	return LitStruct{fields[:]}, nil
@@ -526,9 +619,28 @@ Expression :: union #no_nil {
 	LitChar,
 	LitStruct, // this could be a struct definition or a value. e.g. { age: Int, name: String } vs. {age: }
 	LitArray,
+	FunctionSignature,
+	FunctionDefinition,
 	EnumDecl,
 	LitUnionDecl,
 	LitNone,
+}
+
+// e.g. (int, int, MyArr(string), {a: string, b: {int, int}}) -> {}
+FunctionSignature :: struct {
+	arg_types:   []Expression,
+	return_type: ^Expression,
+}
+
+FunctionDefinition :: struct {
+	args:        []FunctionArg,
+	return_type: Maybe(^Expression), // if nil, this means -> None
+	body:        []Statement,
+}
+
+FunctionArg :: struct {
+	name: Ident,
+	type: Expression,
 }
 
 LogicalAnd :: struct {
@@ -654,11 +766,11 @@ LitChar :: struct {
 LitNone :: struct {}
 
 LitStruct :: struct {
-	fields: []Field,
+	fields: []StructField,
 	// todo: map literals in struct, e.g. {name: "Tadeo", 3: .Nice, 6: .Large}
 	// for a type that is {name: string, int: MyEnum}
 }
-Field :: struct {
+StructField :: struct {
 	name:  Maybe(^Expression), // expression? or ident??? What about maps like { {2,3}: "Hello", {3,4}: "What"  }
 	value: ^Expression,
 }

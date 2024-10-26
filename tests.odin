@@ -60,10 +60,7 @@ BAR := 3
 		}
 
 		i:= None
-*/
 
-main :: proc() {
-	source := `
 	print({"Hello"}, 1, 4)
 	print({x: 4}, 4) 
 	// foo :: () {
@@ -75,6 +72,50 @@ main :: proc() {
 
 	next : {age: int} = foo.arr[3].bar.zaa()
 	a: int = 3 
+
+
+
+	fn_list :: [
+		(i: int) { print(i) }
+		(i: int) { print(i) print(i+1)}
+		(i: int) { print(i) print(i+2)}
+
+		(int) -> string
+	]
+
+	MyType :: (int) -> string
+	MyOtherFunctionType :: (int) -> int
+
+	FunctionTuples :: {(int) -> string (int) -> int}
+
+	// function type literal:
+	A :: (int, t: t) -> int // lets 
+	A :: (3 + 3)
+
+	// if we encounter an expression in parens, it could just be normal parens round an expression,
+	or a function signature
+	// we probably only find out, if, immediately after parens close there is the arrow sign
+
+	
+
+
+*/
+
+main :: proc() {
+	source := `
+	
+		A :  (int, int) -> string  : (a: int, b: int) -> string {
+			print("boohoo")
+			"boohoo".print()
+			 return a + b
+		}
+
+		FnTy :: (int, int) -> string
+
+		for i {
+			print(i)
+		}
+
 	`
 	tokens_arr, err := tokenize(source)
 	tokens := tokens_arr[:]
@@ -112,7 +153,7 @@ statement_to_string :: proc(stmnt: Statement, indent: string = "") -> string {
 	case Assignment:
 		place := expression_to_string(assignment_place_as_expression(s.place))
 		assign := assignment_kind_to_long_string(s.kind)
-		value := expression_to_string(s.value)
+		value := expression_to_string(s.value, indent)
 		return tprint(indent, assign, "(", place, ", ", value, ")")
 	case Declaration:
 		name := s.ident.name
@@ -122,7 +163,7 @@ statement_to_string :: proc(stmnt: Statement, indent: string = "") -> string {
 			ty = expression_to_string(ty_expr)
 		}
 		if value_expr, ok := s.value.(Expression); ok {
-			value = expression_to_string(value_expr)
+			value = expression_to_string(value_expr, indent)
 		}
 		switch s.kind {
 		case .ConstExplicit:
@@ -137,7 +178,7 @@ statement_to_string :: proc(stmnt: Statement, indent: string = "") -> string {
 			return tprint(indent, "DECLARE(", name, ", INFERRED, ", value, ")")
 		}
 	case Expression:
-		return tprint(indent, expression_to_string(s))
+		return tprint(indent, expression_to_string(s, indent))
 	case IfBlock:
 		builder := strings.builder_make(context.temp_allocator)
 		b := &builder
@@ -210,7 +251,7 @@ comparison_kind_to_string :: proc(cmp_kind: ComparisonKind) -> string {
 	unreachable()
 }
 
-expression_to_string :: proc(expr: Expression) -> string {
+expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 	switch ex in expr {
 	case LogicalOr:
 		return two_arg_expr_to_string("OR", ex.first^, ex.second^)
@@ -235,6 +276,21 @@ expression_to_string :: proc(expr: Expression) -> string {
 			op = "DIV"
 		}
 		return two_arg_expr_to_string(op, ex.first^, ex.second^)
+	case FunctionSignature:
+		builder := strings.builder_make(context.temp_allocator)
+		b := &builder
+		write(b, "(")
+		for arg, i in ex.arg_types {
+			if i != 0 {
+				write(b, ", ")
+			}
+			write(b, expression_to_string(arg))
+		}
+		write(b, ") -> ")
+		write(b, expression_to_string(ex.return_type^))
+		return strings.to_string(builder)
+	case FunctionDefinition:
+		return function_definition_to_string(ex, indent)
 	case NegateExpression:
 		return tprint("MINUS(", expression_to_string(ex), ")")
 	case NotExpression:
@@ -321,6 +377,37 @@ expression_to_string :: proc(expr: Expression) -> string {
 		return "None"
 	}
 	return tprint("UnhandledExpression ", expr)
+}
+function_definition_to_string :: proc(fun_def: FunctionDefinition, indent: string) -> string {
+	builder: strings.Builder
+	b := &builder
+	write(b, "(")
+	for arg, i in fun_def.args {
+		if i != 0 {
+			write(b, ", ")
+		}
+		write(b, arg.name.name, ": ", expression_to_string(arg.type))
+	}
+
+	if return_ty, ok := fun_def.return_type.(^Expression); ok {
+		write(b, ") -> ", expression_to_string(return_ty^))
+	} else {
+		write(b, ") -> None")
+	}
+	switch len(fun_def.body) {
+	case 0:
+		write(b, " { }")
+	case 1:
+		write(b, " { ", statement_to_string(fun_def.body[0]), " }")
+	case:
+		write(b, " {\n")
+		inner_indent := more_indent(indent)
+		for s in fun_def.body {
+			write(b, inner_indent, statement_to_string(s), "\n")
+		}
+		write(b, indent, "}")
+	}
+	return strings.to_string(builder)
 }
 assignment_kind_to_string :: proc(kind: AssignmentKind) -> string {
 	switch kind {
