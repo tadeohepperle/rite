@@ -419,7 +419,7 @@ scan_token :: proc(s: ^Scanner) -> Token {
 			return token(.Not)
 		}
 	case .LeftBrace:
-		return token(.LeftBrace)
+		return Token{.LeftBrace, {connected_to_last_token = !s.white_space_since_last_token}}
 	case .RightBrace:
 		return token(.RightBrace)
 	case .LeftBracket:

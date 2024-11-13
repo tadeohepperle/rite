@@ -1,0 +1,134 @@
+
+print :: (int) {
+
+}
+
+print(20-3*4)
+
+A :: 3-4*3
+
+
+PI :  float  : 3.14
+
+Vec3 :    : {x: float, y: float, z: float}
+
+dot :   : (a: Vec3, b: Vec3) -> float {
+    return a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+ZERO :   : PI * dot({0,0,1}, {0,1,0}) * 2
+
+A :: B + 43
+B :: A -2
+
+
+foo1(3)
+
+foo1 3
+foo2 2
+foo1 1
+
+
+foo1 :: (i: int) {
+   if i > 0 {
+        print("foo1", i)
+        foo2(i-1)
+   }
+}
+
+foo2 :: (i: int) {
+   if i > 0 {
+        print("foo2", i)
+        foo1(i-1)
+   }
+}
+
+
+
+
+TOPOSORT
+
+
+
+
+
+
+
+3 * "Hello"
+
+
+lexing:
+   print    (    3    *    4  )
+   
+   
+parsing:
+                      ->  20
+   print ->   MINUS               -> 3
+                      ->  MULTI  
+                                  -> 4
+                                  
+
+An enum should always have a backing type, e.g. Type or int or something else.
+Examples:
+
+Variants :: enum {Foo, Bar, Baz}
+
+// this creates an enum(TypeId) that can take these 3 values, so it is equivalent to:
+Foo :: {}
+Bar :: {}
+Baz :: {}
+Variants :: Foo | Bar | Baz
+
+
+
+// enums can also have other backing values, e.g.
+Nums :: enum {
+    One   : 1
+    Two   : 2
+    Three : 3
+}
+// which creates Three constants:
+One   :: 1
+Two   :: 2
+Three :: 3
+
+// so you can assign any compile time known int 1, 2 or 3 to a Nums:
+n : Nums
+n = 3 // ok
+n = 4 // compile error
+
+// you can also omit the labels, so no constants are created:
+Nums :: enum {1,2,3}
+
+// structs can also be backing values:
+Color :: {r: int, g: int, b: int} 
+Colors :: enum {
+    Black    : Color{0,0,0},
+    Red      : Color{255,0,0},
+    Yellow   : Color{255,255,0},
+    Color{255,255,255}   // can also have unnamed variants in the enum
+}
+// now the question is, do we want to store the actual color struct in variables of the Colors enum values, or just an index 0,1,2?
+I think having just the index is cleaner, but because we want to support implicit casting Colors -> Color, we need to insert lookup table code at the right locations.
+
+
+
+// we should be able to scope stuff into module with a module keyword. E.g.:
+
+Color :: module {
+    Color :: {int,int,int}
+    Black :: Color{0,0,0}
+
+    to_hex_string :: (color: Color) -> string { todo() }
+}
+
+c:= Color.Black.to_hex_string()
+
+
+                             
+                                  
+                                  
+                                  
+                
+   
+   

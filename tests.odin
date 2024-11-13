@@ -1,6 +1,61 @@
 package rite
 import "core:strings"
 
+
+main :: proc() {
+
+	source := `
+	// Foo :: {i: int, j: string}
+	// f := Foo{ i: 0,  j: "string" }
+	a : int = 0
+	b := 2
+	for a < b {
+		a +=1
+		"Hello".print()
+	}
+	`
+
+
+	rand.reset(4)
+	tokens := add_random_tokens_into_code(source, 3)
+	print_tokens_as_code(tokens[:])
+
+	// tokens := random_tokens(100)
+	// print_tokens(tokens[:])
+
+	// source := `
+	// Foo :: {i: int, j: string}
+	// f := Foo(int){ i: 0,  j: "string" }
+	// `
+
+
+	// words := [?]string{"Hello", "my", "love", "you", "are", "the", "best"}
+	// arr: BucketArray(string)
+	// for w in words {
+	// 	ptr := bucket_array_insert(&arr, w)
+	// 	print(cast(uintptr)ptr)
+	// }
+	// bucket_array_print(arr)
+	// bucket_array_free(&arr)
+
+
+	// tokens := tokenize(source) or_else panic("tokenization error")
+	mod, err := parse(tokens[:])
+	if err, ok := err.(string); ok {
+		print("error: ", err)
+		return
+	} else {
+		print("Module:")
+		print(module_to_string(mod))
+	}
+	// err = type_check(&mod)
+	// if err, ok := err.(string); ok {
+	// 	print("Type check error: ", err)
+	// } else {
+	// 	print("Type check okay")
+	// }
+}
+
 /*
 	
 
@@ -101,34 +156,34 @@ BAR := 3
 
 */
 
-main :: proc() {
-	source := `
-	
-		A :  (int, int) -> string  : (a: int, b: int) -> string {
-			print("boohoo")
-			"boohoo".print()
-			 return a + b
-		}
+// main :: proc() {
+// 	source := `
 
-		FnTy :: (int, int) -> string
+// 		A :  (int, int) -> string  : (a: int, b: int) -> string {
+// 			print("boohoo")
+// 			"boohoo".print()
+// 			 return a + b * c + 3
+// 		}
 
-		for i {
-			print(i)
-		}
+// 		FnTy :: (int, int) -> string
 
-	`
-	tokens_arr, err := tokenize(source)
-	tokens := tokens_arr[:]
-	if err, ok := err.(string); ok {
-		print(err)
-		return
-	}
-	print_tokens_as_code(tokens)
-	print_tokens(tokens)
-	mod, ok := parse(tokens)
-	print("parse err: ", ok)
-	print(module_to_string(mod))
-}
+// 		for i {
+// 			print(i)
+// 		}
+
+// 	`
+// 	tokens_arr, err := tokenize(source)
+// 	tokens := tokens_arr[:]
+// 	if err, ok := err.(string); ok {
+// 		print(err)
+// 		return
+// 	}
+// 	print_tokens_as_code(tokens)
+// 	print_tokens(tokens)
+// 	mod, ok := parse(tokens)
+// 	print("parse err: ", ok)
+// 	print(module_to_string(mod))
+// }
 
 write :: proc(builder: ^strings.Builder, elements: ..string) {
 	for s in elements {
@@ -203,11 +258,14 @@ statement_to_string :: proc(stmnt: Statement, indent: string = "") -> string {
 	case ForLoop:
 		builder := strings.builder_make(context.temp_allocator)
 		b := &builder
-		condition := ""
-		if cond, ok := s.condition.(Expression); ok {
-			condition = tprint(" ", expression_to_string(cond))
+		kind_str := ""
+		switch kind in s.kind {
+		case ConditionalLoop:
+			kind_str = tprint(" ", expression_to_string(Expression(kind)))
+		case IteratorLoop:
+			kind_str = tprint(" ", kind.variable.name, " in ", expression_to_string(kind.iterator))
 		}
-		write(b, indent, "for", condition, " {\n")
+		write(b, indent, "for", kind_str, " {\n")
 		inner_indent := more_indent(indent)
 		for inner_stmnt in s.body {
 			write(b, statement_to_string(inner_stmnt, inner_indent), "\n")
@@ -252,7 +310,7 @@ comparison_kind_to_string :: proc(cmp_kind: ComparisonKind) -> string {
 }
 
 expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
-	switch ex in expr {
+	switch ex in expr.kind {
 	case LogicalOr:
 		return two_arg_expr_to_string("OR", ex.first^, ex.second^)
 	case LogicalAnd:
@@ -292,9 +350,9 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 	case FunctionDefinition:
 		return function_definition_to_string(ex, indent)
 	case NegateExpression:
-		return tprint("MINUS(", expression_to_string(ex), ")")
+		return tprint("MINUS(", expression_to_string(ex^), ")")
 	case NotExpression:
-		return tprint("NOT(", expression_to_string(ex), ")")
+		return tprint("NOT(", expression_to_string(ex^), ")")
 	case CallOp:
 		function := expression_to_string(ex.function^)
 		builder := strings.builder_make(context.temp_allocator)
@@ -335,6 +393,9 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 	case LitStruct:
 		builder := strings.builder_make(context.temp_allocator)
 		b := &builder
+		if name, ok := ex.name.(^Expression); ok {
+			write(b, expression_to_string(name^))
+		}
 		write(b, "{ ")
 		for field, i in ex.fields {
 			if i != 0 {
@@ -443,11 +504,11 @@ assignment_kind_to_long_string :: proc(kind: AssignmentKind) -> string {
 assignment_place_as_expression :: proc(place: AssignmentPlace) -> Expression {
 	switch place in place {
 	case AccessOp:
-		return place
+		return Expression{kind = place}
 	case Ident:
-		return place
+		return Expression{kind = place}
 	case IndexOp:
-		return place
+		return Expression{kind = place}
 	}
 	unreachable()
 }
@@ -476,6 +537,8 @@ tokenize_test :: proc() {
 	}
 
 	`
+
+
 	tokens, err := tokenize(source)
 	if err, is_err := err.(string); is_err {
 		print("Error: ", err)
@@ -488,6 +551,123 @@ tokenize_test :: proc() {
 		print_tokens(tokens[:])
 	}
 
+}
+
+random_tokens :: proc(num: int = 10) -> (tokens: [dynamic]Token) {
+	for i in 0 ..< num {
+		append(&tokens, random_token())
+	}
+	return tokens
+}
+
+add_random_tokens_into_code :: proc(source: string, num_random_tokens: int) -> [dynamic]Token {
+	tokens, err := tokenize(source)
+	assert(err == nil)
+	for _ in 0 ..< num_random_tokens {
+		inject_at(&tokens, rand.int_max(len(tokens)), random_token())
+	}
+	return tokens
+}
+
+import "core:math"
+import "core:math/rand"
+random_token :: proc() -> (tok: Token) {
+	LIT_TOKENS := [?]TokenType {
+		.LitBool, // true or false
+		.LitInt, // e.g. 383
+		.LitFloat, // e.g. 3.40
+		.LitString, // "Hello"
+		.LitChar, // 'Hello'
+		.LitNone, //
+	}
+	OTHER_TOKENS := [?]TokenType {
+		.LeftBrace,
+		.RightBrace,
+		.LeftBracket,
+		.RightBracket,
+		.LeftParen,
+		.RightParen,
+		.Dot, // .
+		.DotDot, // ..
+		.DotDotDot, //  ...
+		.Pipe, // |
+		.Add, // +
+		.AddAssign, // +=
+		.Sub, // -
+		.SubAssign, // -=
+		.Mul, // *
+		.MulAssign, // *= 
+		.Div, // /
+		.DivAssign, // 
+		.Colon, // :
+		.ColonAssign, // :=
+		.ColonColon, // ::
+		.Assign, // = 
+		.Not, // !
+		.NotEqual, // !=
+		.Greater, // >
+		.Less, // <
+		.GreaterEqual, // >=
+		.LessEqual, // <=
+		.Equal, // ==
+		.And, // &&, and
+		.Or, // ||, or
+		.Arrow, // ->
+		.Is, // is
+		.In, // in
+		.If, // if
+		.For, // for
+		.Else, // else
+		.Enum, // enum
+		.Break, // break
+		.Return, // return
+	}
+
+	r := rand.float32()
+	if r > 0.7 {
+		tok.ty = .Ident
+		IDENT_NAMES := [?]string {
+			"Foo",
+			"Bar",
+			"Baz",
+			"a",
+			"x",
+			"b",
+			"fizz",
+			"crux",
+			"abc",
+			"c",
+			"d",
+			"xxx",
+		}
+		tok.meta.string = rand.choice(IDENT_NAMES[:])
+	} else if r > 0.4 {
+		tok.ty = rand.choice(LIT_TOKENS[:])
+		#partial switch tok.ty {
+		case .LitBool:
+			// true or false
+			tok.meta.bool = rand.choice([]bool{true, false})
+		case .LitInt:
+			// e.g. 383
+			tok.meta.int = rand.int63() % 100
+		case .LitFloat:
+			// e.g. 3.40
+			tok.meta.float = math.round_f64(rand.float64() * 1000.0) / 100.0
+		case .LitString:
+			// "Hello"
+			strings := [?]string{"Hello", "World", "What", "Odin", "Love", "Is"}
+			tok.meta.string = rand.choice(strings[:])
+		case .LitChar:
+			// 'Hello'
+			chars := [?]rune{'j', 'k', 'p', 'g', 'h', 'q', 'l'}
+			tok.meta.char = rand.choice(chars[:])
+		case .LitNone: //
+
+		}
+	} else {
+		tok.ty = rand.choice(OTHER_TOKENS[:])
+	}
+	return tok
 }
 
 

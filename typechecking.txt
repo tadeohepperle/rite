@@ -1,0 +1,47 @@
+
+we need to annotate the AST with type ids.
+Also we need to store what type names relate to which type ids
+the type ids are stored somewhere and store the entire type information for a type
+
+The problem is, that we need to do typechecking in a weird order.
+For example, all type definitions have to be known first before we can register types and such, right?
+
+Consider this example:
+
+B :: {a: A}
+A :: {i: int, j: int}
+here, to register type B, type A needs to be registered too.
+
+so, we typecheck like this:
+see const B, inferred type. See struct literal, check if this is a value or a type.
+If value, register a type id for the annonymous struct, if value
+
+typechecking is a series of resolve operations...
+
+resolve A -> resolve B
+
+so the entire thing is tied in with const resolving
+
+
+C :: B + 3
+B :: A + fib(2)
+A :: 4
+fib :: (i: int) -> int {
+
+} 
+
+for all constants in some scope, 
+we need a way to determine their resolve order and then resolve them in order
+
+How do we figure out this web of dependencies???
+
+first, collect all constants in some pool, that contains Ident + (optional type) + expression
+
+this pool is toposorted and the evaluation starts with the constants that have no dependents
+if there are cycles, the thing fails.
+all const code is interpreted, not compiled
+
+for constants, we probably need two passes: one for type inference, one for actual value eval of the const expressions
+
+lets do the type one first.
+

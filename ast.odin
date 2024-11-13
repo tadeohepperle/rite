@@ -14,11 +14,9 @@ log :: proc(args: ..any) {
 	fmt.println(..args)
 }
 
-
 current :: proc(p: ^Parser) -> (tok: Token) {
 	return p.tokens[p.current]
 }
-
 
 next :: proc(p: ^Parser) -> (tok: Token) {
 	tok = p.tokens[p.current]
@@ -111,6 +109,17 @@ accept_left_bracket_connected_to_last_token :: proc(p: ^Parser) -> bool {
 	return accepted
 }
 
+
+accept_left_brace_connected_to_last_token :: proc(p: ^Parser) -> bool {
+	cur := p.tokens[p.current]
+	accepted := cur.ty == .LeftBrace && bool(cur.meta.connected_to_last_token)
+	if accepted {
+		log("Accepted left brace connected to last token")
+		p.current += 1
+	}
+	return accepted
+}
+
 expect_expressions :: proc(p: ^Parser) -> (expressions: []Expression, err: Err) {
 	res: [dynamic]Expression
 	_expect_expressions(p, &res) or_return
@@ -138,16 +147,22 @@ _expect_expressions :: #force_inline proc(
 expect_for_loop :: proc(p: ^Parser) -> (loop: ForLoop, err: Err) {
 	log("Detected For Loop")
 	expect_token(p, .For) or_return
-	if accept_token(p, .LeftBrace) {
-		// infinite loop without condition
-		loop.body = expect_statements(p) or_return
-		expect_token(p, .RightBrace) or_return
+	if current(p).ty == .LeftBrace {
+		// for {} , infinite loop
+	} else if current(p).ty == .Ident && peek(p).ty == .In {
+		// for variable in iterator {}
+		variable := expect_ident(p) or_return
+		expect_token(p, .In) or_return
+		iterator := expect_expression(p) or_return
+		loop.kind = IteratorLoop{variable, iterator}
 	} else {
-		loop.condition = expect_expression(p) or_return
-		expect_token(p, .LeftBrace) or_return
-		loop.body = expect_statements(p) or_return
-		expect_token(p, .RightBrace) or_return
+		// for condition {}
+		condition := expect_expression(p) or_return
+		loop.kind = ConditionalLoop(condition)
 	}
+	expect_token(p, .LeftBrace) or_return
+	loop.body = expect_statements(p) or_return
+	expect_token(p, .RightBrace) or_return
 	return loop, nil
 }
 
@@ -178,7 +193,7 @@ expect_if_block :: proc(p: ^Parser) -> (if_block: IfBlock, err: Err) {
 
 
 expression_as_assignment_place :: proc(expr: Expression) -> (place: AssignmentPlace, err: Err) {
-	#partial switch place in expr {
+	#partial switch place in expr.kind {
 	case Ident:
 		return place, nil
 	case AccessOp:
@@ -222,7 +237,7 @@ expect_assignment_declaration_or_expression :: proc(
 	if current_ty == .ColonColon || current_ty == .Colon || current_ty == .ColonAssign {
 		// place needs to be single ident for declaration now:
 		ident: Ident = ---
-		if idnt, is_idnt := first_expr.(Ident); is_idnt {
+		if idnt, is_idnt := first_expr.kind.(Ident); is_idnt {
 			ident = idnt
 		} else {
 			return {}, "first expression in declaration must be ident!"
@@ -300,7 +315,7 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		expr = expect_logical_and_or_higher(p) or_return
 		if current(p).ty == .Or {
 			next := expect_logical_or_or_higher(p) or_return
-			return Expression(LogicalOr{new_clone(expr), new_clone(next)}), nil
+			return Expression{kind = LogicalOr{new_clone(expr), new_clone(next)}}, nil
 		} else {
 			return expr, nil
 		}
@@ -310,7 +325,7 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		expr = expect_comparison_or_higher(p) or_return
 		if current(p).ty == .And {
 			next := expect_logical_and_or_higher(p) or_return
-			return Expression(LogicalOr{new_clone(expr), new_clone(next)}), nil
+			return Expression{kind = LogicalOr{new_clone(expr), new_clone(next)}}, nil
 		} else {
 			return expr, nil
 		}
@@ -358,16 +373,16 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 			next_expr := expect_add_or_sub_or_higher(p) or_return
 			append(&others, ComparisonElement{kind, next_expr})
 		}
-		return Expression(Comparison{first = new_clone(first), others = others[:]}), nil
+		return Expression{kind = Comparison{first = new_clone(first), others = others[:]}}, nil
 	}
 	expect_add_or_sub_or_higher :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		first := expect_mul_or_div_or_higher(p) or_return
 		if accept_token(p, .Add) {
 			second := expect_add_or_sub_or_higher(p) or_return
-			return Expression(MathOp{.Add, new_clone(first), new_clone(second)}), nil
+			return Expression{kind = MathOp{.Add, new_clone(first), new_clone(second)}}, nil
 		} else if accept_token(p, .Sub) {
 			second := expect_add_or_sub_or_higher(p) or_return
-			return Expression(MathOp{.Sub, new_clone(first), new_clone(second)}), nil
+			return Expression{kind = MathOp{.Sub, new_clone(first), new_clone(second)}}, nil
 		}
 		return first, nil
 	}
@@ -375,10 +390,10 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		first := expect_unary_like_or_higher(p) or_return
 		if accept_token(p, .Mul) {
 			second := expect_mul_or_div_or_higher(p) or_return
-			return Expression(MathOp{.Mul, new_clone(first), new_clone(second)}), nil
+			return Expression{kind = MathOp{.Mul, new_clone(first), new_clone(second)}}, nil
 		} else if accept_token(p, .Div) {
 			second := expect_mul_or_div_or_higher(p) or_return
-			return Expression(MathOp{.Div, new_clone(first), new_clone(second)}), nil
+			return Expression{kind = MathOp{.Div, new_clone(first), new_clone(second)}}, nil
 		}
 		return first, nil
 	}
@@ -386,11 +401,11 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		if accept_token(p, .Sub) {
 			// negative numeric expressions e.g. -2
 			first := expect_unary_like_or_higher(p) or_return
-			return NegateExpression(new_clone(first)), nil
+			return Expression{kind = NegateExpression(new_clone(first))}, nil
 		} else if accept_token(p, .Not) {
 			// not operator e.g. !myfun()
 			first := expect_unary_like_or_higher(p) or_return
-			return NotExpression(new_clone(first)), nil
+			return Expression{kind = NotExpression(new_clone(first))}, nil
 		} else {
 			// single value or parens around some expression, then check if function call or indexing directly behind:
 
@@ -406,19 +421,46 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 				if accept_token(p, .Dot) {
 					ident := expect_ident(p) or_return
 					parent := new_clone(expr)
-					expr = AccessOp{parent, ident}
+					expr = Expression {
+						kind = AccessOp{parent, ident},
+					}
 				} else if accept_left_paren_connected_to_last_token(p) {
 					args := expect_expressions(p) or_return
 					expect_token(p, .RightParen) or_return
 					fn_expr := new_clone(expr)
-					expr = CallOp{fn_expr, args}
+					expr = Expression {
+						kind = CallOp{fn_expr, args},
+					}
 				} else if accept_left_bracket_connected_to_last_token(p) {
 					index := expect_expression(p) or_return // todo: later support multiple operators in index
 					expect_token(p, .RightBracket) or_return
 					place := new_clone(expr)
-					expr = IndexOp{place, new_clone(index)}
+					expr = Expression {
+						kind = IndexOp{place, new_clone(index)},
+					}
 				} else {
-					break
+					could_be_named_struct_literal := false
+					#partial switch ex in expr.kind {
+					case Ident:
+						could_be_named_struct_literal = true
+					case AccessOp:
+						could_be_named_struct_literal = true
+					case CallOp:
+						could_be_named_struct_literal = true
+					}
+					if could_be_named_struct_literal &&
+					   accept_left_brace_connected_to_last_token(p) {
+						struct_lit := expect_inside_of_struct_literal(p) or_return
+						expect_token(p, .RightBrace) or_return
+						struct_name := new_clone(expr)
+						struct_lit.name = struct_name
+						expr = Expression {
+							kind = struct_lit,
+						}
+					} else {
+						break
+					}
+
 				}
 
 			}
@@ -437,20 +479,20 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 		tok := next(p)
 		#partial switch tok.ty {
 		case .LitBool:
-			return LitBool{tok.meta.bool}, nil
+			return Expression{kind = LitBool{tok.meta.bool}}, nil
 		case .LitInt:
-			return LitInt{tok.meta.int}, nil
+			return Expression{kind = LitInt{tok.meta.int}}, nil
 		case .LitFloat:
-			return LitFloat{tok.meta.float}, nil
+			return Expression{kind = LitFloat{tok.meta.float}}, nil
 		case .LitChar:
-			return LitChar{tok.meta.char}, nil
+			return Expression{kind = LitChar{tok.meta.char}}, nil
 		case .LitString:
-			return LitString{tok.meta.string}, nil
+			return Expression{kind = LitString{tok.meta.string}}, nil
 		case .LitNone:
-			return LitNone{}, nil
+			return Expression{kind = LitNone{}}, nil
 		case .Ident:
 			ident := Ident{tok.meta.string}
-			return ident, nil
+			return Expression{kind = ident}, nil
 		case .Enum:
 			// enum {High, Low, Mid}
 			expect_token(p, .LeftBrace) or_return
@@ -464,7 +506,7 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 				append(&variants, ident)
 			}
 			expect_token(p, .RightBrace) or_return
-			return EnumDecl{variants[:]}, nil
+			return Expression{kind = EnumDecl{variants[:]}}, nil
 		case .LeftParen:
 			// there are 3 cases now: 
 			// case 1: a function type:       ( TYPE*  ) -> TYPE
@@ -491,7 +533,7 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 				expect_token(p, .LeftBrace) or_return
 				fun_def.body = expect_statements(p) or_return
 				expect_token(p, .RightBrace) or_return
-				return fun_def, nil
+				return Expression{kind = fun_def}, nil
 			} else {
 				expr := expect_expression(p) or_return
 				this = current(p)
@@ -509,7 +551,7 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 					expect_token(p, .Arrow) or_return
 					return_type := expect_expression(p) or_return
 					function_signature := FunctionSignature{arg_types[:], new_clone(return_type)}
-					return function_signature, nil
+					return Expression{kind = function_signature}, nil
 				}
 			}
 			unreachable()
@@ -518,11 +560,11 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, err: Err) {
 			// could also be type e.g. [int] or [{s: int, f: float}] or [enum{Red, Black}]
 			values := expect_expressions(p) or_return
 			expect_token(p, .RightBracket) or_return
-			return LitArray{values}, nil
+			return Expression{kind = LitArray{values}}, nil
 		case .LeftBrace:
 			struct_lit := expect_inside_of_struct_literal(p) or_return
 			expect_token(p, .RightBrace) or_return
-			return struct_lit, nil
+			return Expression{kind = struct_lit}, nil
 		// { age: int, name: string} 
 		// { foo: 2+4, "Hello": 34, "Noob": 40404 }
 		// could also be tuple:
@@ -554,7 +596,7 @@ expect_function_definition_args :: proc(p: ^Parser) -> (args: []FunctionArg, err
 
 // e.g. examples:
 expect_inside_of_struct_literal :: proc(p: ^Parser) -> (lit_struct: LitStruct, err: Err) {
-	fields: [dynamic]StructField
+	fields: [dynamic]LitStructField
 	for {
 		if current(p).ty == .RightBrace {
 			break
@@ -565,14 +607,14 @@ expect_inside_of_struct_literal :: proc(p: ^Parser) -> (lit_struct: LitStruct, e
 			value := expect_expression(p) or_return
 			append(
 				&fields,
-				StructField{name = new_clone(val_or_field_name), value = new_clone(value)},
+				LitStructField{name = new_clone(val_or_field_name), value = new_clone(value)},
 			)
 		} else {
 			// unnamed field
-			append(&fields, StructField{name = nil, value = new_clone(val_or_field_name)})
+			append(&fields, LitStructField{name = nil, value = new_clone(val_or_field_name)})
 		}
 	}
-	return LitStruct{fields[:]}, nil
+	return LitStruct{fields[:], nil}, nil
 }
 
 
@@ -598,8 +640,13 @@ Module :: struct {
 	statements: []Statement,
 }
 
+Expression :: struct {
+	type: Type,
+	kind: ExpressionKind,
+}
+
 // todo: should be struct for tracking type in type inference!
-Expression :: union #no_nil {
+ExpressionKind :: union #no_nil {
 	LogicalOr,
 	LogicalAnd,
 	Comparison,
@@ -708,9 +755,19 @@ ElseBlock :: struct {
 	body: []Statement,
 }
 
+
+ForLoopKind :: union {
+	ConditionalLoop,
+	IteratorLoop,
+}
+ConditionalLoop :: distinct Expression
+IteratorLoop :: struct {
+	variable: Ident,
+	iterator: Expression,
+}
 ForLoop :: struct {
-	condition: Maybe(Expression), // if nil: infinite loop
-	body:      []Statement,
+	kind: ForLoopKind, // can be nil, then infinite loop
+	body: []Statement,
 }
 
 Assignment :: struct {
@@ -766,11 +823,12 @@ LitChar :: struct {
 LitNone :: struct {}
 
 LitStruct :: struct {
-	fields: []StructField,
+	fields: []LitStructField,
+	name:   Maybe(^Expression), // e.g. Foo{1,2}
 	// todo: map literals in struct, e.g. {name: "Tadeo", 3: .Nice, 6: .Large}
 	// for a type that is {name: string, int: MyEnum}
 }
-StructField :: struct {
+LitStructField :: struct {
 	name:  Maybe(^Expression), // expression? or ident??? What about maps like { {2,3}: "Hello", {3,4}: "What"  }
 	value: ^Expression,
 }
