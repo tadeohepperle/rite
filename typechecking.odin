@@ -276,6 +276,8 @@ add_type_to_expression :: proc(types: ^Types, expr: ^Expression, expected_type: 
 
 add_type_to_expression_unrestricted :: proc(types: ^Types, expr: ^Expression) {
 	switch &ex in expr.kind {
+	case InvalidExpression:
+		todo()
 	case LogicalOr:
 		add_type_to_expression_expected(types, ex.first, BOOL_TYPE)
 		add_type_to_expression_expected(types, ex.second, BOOL_TYPE)

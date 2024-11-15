@@ -1,0 +1,1093 @@
+package rite
+
+import "core:fmt"
+import "core:slice"
+
+Parser :: struct {
+	tokens:  []Token,
+	errors:  [dynamic]ParseError,
+	current: int,
+}
+
+ParseError :: struct {
+	msg:    string,
+	tokens: TokenRange,
+}
+TokenRange :: struct {
+	start_idx: int,
+	end_idx:   int,
+}
+
+add_error :: proc(p: ^Parser, msg: string, range: TokenRange) {
+	append(&p.errors, ParseError{msg, range})
+}
+
+
+finished :: proc(p: ^Parser) -> bool {
+	return p.current >= len(p.tokens)
+}
+
+LOGS_ACTIVATED :: false
+log :: proc(args: ..any) {
+	when LOGS_ACTIVATED {
+		fmt.println(..args)
+	}
+}
+
+current :: proc(p: ^Parser) -> (tok: Token) {
+	return p.tokens[p.current]
+}
+
+
+next :: proc(p: ^Parser) -> (tok: Token) {
+	tok = p.tokens[p.current]
+	p.current += 1
+	log("Consumed token ", tok.ty)
+	return tok
+}
+
+// skips one token, useful if you already know what this token is.
+skip :: #force_inline proc(p: ^Parser) {
+	p.current += 1
+}
+
+peek :: proc(p: ^Parser) -> (tok: Token) {
+	idx := p.current + 1
+	if idx >= len(p.tokens) {
+		return error_token("out of bounds")
+	}
+	return p.tokens[idx]
+}
+
+peek_2 :: proc(p: ^Parser) -> (tok: Token) {
+	idx := p.current + 2
+	if idx >= len(p.tokens) {
+		return error_token("out of bounds")
+	}
+	return p.tokens[idx]
+}
+
+expect_token :: proc(p: ^Parser, ty: TokenType) -> bool {
+	log("  Expect token ", ty)
+	tok := p.tokens[p.current]
+	if tok.ty == ty {
+		p.current += 1
+		return true
+	} else {
+		return false
+	}
+}
+accept_token :: proc(p: ^Parser, ty: TokenType) -> bool {
+	if p.current >= len(p.tokens) {
+		return false
+	}
+	is_ty := p.tokens[p.current].ty == ty
+	if is_ty {
+		log("Accepted Token ", ty)
+		p.current += 1
+	}
+	return is_ty
+}
+
+expect_ident :: proc(p: ^Parser) -> (Ident, bool) {
+	log("Expect Ident")
+	tok := next(p)
+	if tok.ty == .Ident {
+		return Ident{tok.meta.string}, true
+	} else {
+		return {}, false
+	}
+}
+accept_ident :: proc(p: ^Parser) -> (Ident, bool) {
+	if p.current >= len(p.tokens) {
+		return {}, false
+	}
+	cur := p.tokens[p.current]
+	if cur.ty == .Ident {
+		log("Accepted ident: ", cur.meta.string)
+		p.current += 1
+		return Ident{cur.meta.string}, true
+	}
+	return {}, false
+}
+
+accept_left_paren_connected_to_last_token :: proc(p: ^Parser) -> bool {
+	cur := p.tokens[p.current]
+	accepted := cur.ty == .LeftParen && bool(cur.meta.connected_to_last_token)
+	if accepted {
+		log("Accepted left paren connected to last token")
+		p.current += 1
+	}
+	return accepted
+}
+
+accept_left_bracket_connected_to_last_token :: proc(p: ^Parser) -> bool {
+	cur := p.tokens[p.current]
+	accepted := cur.ty == .LeftBracket && bool(cur.meta.connected_to_last_token)
+	if accepted {
+		log("Accepted left bracket connected to last token")
+		p.current += 1
+	}
+	return accepted
+}
+
+
+accept_left_brace_connected_to_last_token :: proc(p: ^Parser) -> bool {
+	cur := p.tokens[p.current]
+	accepted := cur.ty == .LeftBrace && bool(cur.meta.connected_to_last_token)
+	if accepted {
+		log("Accepted left brace connected to last token")
+		p.current += 1
+	}
+	return accepted
+}
+
+
+parse :: proc(tokens: []Token) -> (mod: Module, errors: []ParseError) {
+	init_token_type_flags()
+	p := Parser {
+		tokens  = tokens,
+		current = 0,
+	}
+	statements := expect_statements(&p)
+	return Module{statements = statements}, {}
+}
+
+expect_expressions :: proc(p: ^Parser) -> (expressions: []Expression) {
+	res: [dynamic]Expression
+	_expect_expressions(p, &res)
+	return res[:]
+}
+
+_expect_expressions :: #force_inline proc(p: ^Parser, expressions: ^[dynamic]Expression) {
+	log("Expect Expressions")
+	for (.CouldBeExpressionStart in TOKEN_TYPE_FLAGS[current(p).ty]) {
+		expr, success := expect_expression(p)
+		if success {
+			append(expressions, expr)
+		}
+	}
+}
+
+// expect_for_loop :: proc(p: ^Parser) -> (loop: ForLoop, success: bool) {
+// 	log("Detected For Loop")
+// 	expect_token(p, .For) 
+// 	if current(p).ty == .LeftBrace {
+// 		// for {} , infinite loop
+// 	} else if current(p).ty == .Ident && peek(p).ty == .In {
+// 		// for variable in iterator {}
+// 		variable := expect_ident(p) 
+// 		expect_token(p, .In) 
+// 		iterator := expect_expression(p) 
+// 		loop.kind = IteratorLoop{variable, iterator}
+// 	} else {
+// 		// for condition {}
+// 		condition := expect_expression(p) 
+// 		loop.kind = ConditionalLoop(condition)
+// 	}
+// 	expect_token(p, .LeftBrace) 
+// 	loop.body = expect_statements(p) 
+// 	expect_token(p, .RightBrace) 
+// 	return loop, nil
+// }
+
+// expect_if_block :: proc(p: ^Parser) -> (if_block: IfBlock, err: Err) {
+// 	log("Expect If Block")
+// 	expect_token(p, .If) 
+// 	if_block.condition = expect_expression(p) 
+// 	expect_token(p, .LeftBrace) 
+// 	if_block.body = expect_statements(p) 
+// 	expect_token(p, .RightBrace) 
+// 	if accept_token(p, .Else) {
+// 		if current(p).ty == .If {
+// 			// if else block incoming:
+// 			log("    Detected Else If")
+// 			else_if_block := expect_if_block(p) 
+// 			if_block.else_block = new_clone(else_if_block)
+// 		} else {
+// 			log("    Detected Else")
+// 			// else block:
+// 			expect_token(p, .LeftBrace) 
+// 			else_body := expect_statements(p) 
+// 			if_block.else_block = new_clone(ElseBlock{else_body})
+// 			expect_token(p, .RightBrace) 
+// 		}
+// 	}
+// 	return if_block, nil
+// }
+
+
+expression_as_assignment_place :: proc(
+	expr: Expression,
+) -> (
+	place: AssignmentPlace,
+	success: bool,
+) {
+	#partial switch place in expr.kind {
+	case Ident:
+		return place, true
+	case AccessOp:
+		return place, true
+	case IndexOp:
+		return place, true
+	}
+	return {}, false
+}
+
+expect_assignment_declaration_or_expression :: proc(
+	p: ^Parser,
+) -> (
+	statement: Statement,
+	success: bool,
+) {
+	first_expr := expect_expression(p)
+	current_ty := current(p).ty
+
+	// maybe this is the target place of an assignment with =, +=, -=, *= or /=:
+	TokenAndAssignKind :: struct {
+		token_ty:    TokenType,
+		assign_kind: AssignmentKind,
+	}
+	CHECK_ASSIGNMENTS :: [?]TokenAndAssignKind {
+		{.Assign, .Assign},
+		{.AddAssign, .AddAssign},
+		{.SubAssign, .SubAssign},
+		{.MulAssign, .MulAssign},
+		{.DivAssign, .DivAssign},
+	}
+	for check in CHECK_ASSIGNMENTS {
+		if accept_token(p, check.token_ty) {
+			place, is_place := expression_as_assignment_place(first_expr)
+			second_expr := expect_expression(p)
+			return Statement(Assignment{place, check.assign_kind, second_expr}), true
+		}
+	}
+
+	// maybe this is a declaration with ::, : Ty :, :=, : Ty or : Ty =  
+	if current_ty == .ColonColon || current_ty == .Colon || current_ty == .ColonAssign {
+		// place needs to be single ident for declaration now:
+		ident: Ident = ---
+		if idnt, is_idnt := first_expr.kind.(Ident); is_idnt {
+			ident = idnt
+		} else {
+			add_error(p, "first expression in declaration must be ident", first_expr.range)
+			return {}, false
+		}
+		decl := Declaration {
+			ident = ident,
+		}
+		if accept_token(p, .ColonColon) {
+			decl.kind = .ConstInferred
+			decl.value, _ = expect_expression(p)
+		} else if accept_token(p, .ColonAssign) {
+			decl.kind = .RuntimeInferred
+			decl.value, _ = expect_expression(p)
+		} else if accept_token(p, .Colon) {
+			decl.ty, _ = expect_expression(p)
+			if accept_token(p, .Colon) {
+				decl.kind = .ConstExplicit
+				decl.value, _ = expect_expression(p)
+			} else if accept_token(p, .Assign) {
+				decl.kind = .RuntimeExplicit
+				decl.value, _ = expect_expression(p)
+			} else {
+				decl.kind = .RuntimeExplicitDefault
+			}
+		}
+		assert(decl.ty != nil || decl.value != nil)
+		return Statement(decl), true
+	}
+	// just return the parsed expression, there seems to be no assignment or declaration here:
+	return Statement(first_expr), true
+}
+
+expect_statement :: proc(p: ^Parser) -> (statement: Statement, success: bool) {
+	log("Expect Statement")
+	current_ty := current(p).ty
+	if current_ty == .Break {
+		skip(p) // the .Break
+		return Statement(BreakStatement{}), true
+	} else if current_ty == .Return {
+		skip(p) // the .Return
+		return_stmt: ReturnStatement
+		if !finished(p) && has_flag(current(p).ty, .CouldBeExpressionStart) {
+			return_stmt.value, _ = expect_expression(p)
+		}
+		return Statement(return_stmt), true
+	} else if current_ty == .For {
+		todo()
+		// for_loop := expect_for_loop(p) 
+		// return Statement(for_loop), nil
+	} else if current_ty == .If {
+		todo()
+		// if_block := expect_if_block(p) 
+		// return Statement(if_block), nil
+	} else if current_ty == .Switch {
+		todo()
+	} else {
+		return expect_assignment_declaration_or_expression(p)
+	}
+}
+
+expect_statements :: proc(p: ^Parser) -> (statements: []Statement) {
+	log("Expect Statements ------------------")
+	res: [dynamic]Statement
+	for (.CouldBeStatementStart in TOKEN_TYPE_FLAGS[current(p).ty]) {
+		expr, success := expect_statement(p)
+		if success {
+			append(&res, expr)
+		}
+	}
+	current_ty := current(p).ty
+	if .CouldBeAfterStatements not_in TOKEN_TYPE_FLAGS[current_ty] {
+		add_error(
+			p,
+			tprint("Unexpected Token after a statement: '", current_ty, "'"),
+			TokenRange{p.current, p.current + 1},
+		)
+		skip(p)
+	}
+	log("End Statements ------------------")
+	return res[:]
+}
+
+expect_expression :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
+	log("Expect Expression")
+	return expect_logical_or_or_higher(p)
+
+	expect_logical_or_or_higher :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
+		expr, success = expect_logical_and_or_higher(p)
+		if success && current(p).ty == .Or {
+			second, second_ok := expect_logical_or_or_higher(p)
+			return expression(
+					LogicalOr{new_clone(expr), new_clone(second)},
+					expr.range.start_idx,
+					second.range.end_idx,
+				),
+				second_ok
+		} else {
+			return expr, success
+		}
+	}
+
+	expect_logical_and_or_higher :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
+		expr, success = expect_comparison_or_higher(p)
+		if current(p).ty == .And {
+			second, second_ok := expect_logical_and_or_higher(p)
+			return expression(
+					LogicalOr{new_clone(expr), new_clone(second)},
+					expr.range.start_idx,
+					second.range.end_idx,
+				),
+				second_ok
+		} else {
+			return expr, success
+		}
+	}
+
+	expect_comparison_or_higher :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
+		first, first_ok := expect_add_or_sub_or_higher(p)
+		if _, is_cmp := cmp_operator_token_ty_to_kind(current(p).ty); !is_cmp {
+			return first, first_ok
+		}
+		success = first_ok
+
+		cmp_operator_token_ty_to_kind :: proc(
+			ty: TokenType,
+		) -> (
+			kind: ComparisonKind,
+			is_cmp: bool,
+		) {
+			#partial switch ty {
+			case .Greater:
+				return .Greater, true
+			case .GreaterEqual:
+				return .GreaterEqual, true
+			case .Less:
+				return .Less, true
+			case .LessEqual:
+				return .LessEqual, true
+			case .Equal:
+				return .Equal, true
+			case .NotEqual:
+				return .NotEqual, true
+			}
+			return {}, false
+		}
+		others: [dynamic]ComparisonElement
+		for {
+			kind, is_cmp := cmp_operator_token_ty_to_kind(current(p).ty)
+			if !is_cmp {
+				break
+			}
+			// comparison_operator
+			log("Comparition operator: ", current(p).ty, kind, is_cmp)
+			next(p)
+			next_expr, next_expr_ok := expect_add_or_sub_or_higher(p)
+			success &= next_expr_ok
+			append(&others, ComparisonElement{kind, next_expr})
+		}
+		start_idx := first.range.start_idx
+		end_idx := others[len(others) - 1].expr.range.end_idx
+		return expression(
+				Comparison{first = new_clone(first), others = others[:]},
+				start_idx,
+				end_idx,
+			),
+			success
+	}
+	expect_add_or_sub_or_higher :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
+		first, first_ok := expect_mul_or_div_or_higher(p)
+		if accept_token(p, .Add) {
+			second, second_ok := expect_add_or_sub_or_higher(p)
+			return math_op_expr(.Add, first, second), first_ok && second_ok
+		} else if accept_token(p, .Sub) {
+			second, second_ok := expect_add_or_sub_or_higher(p)
+			return math_op_expr(.Sub, first, second), first_ok && second_ok
+		}
+		return first, first_ok
+	}
+	expect_mul_or_div_or_higher :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
+		first, first_ok := expect_mul_or_div_or_higher(p)
+		if accept_token(p, .Mul) {
+			second, second_ok := expect_add_or_sub_or_higher(p)
+			return math_op_expr(.Mul, first, second), first_ok && second_ok
+		} else if accept_token(p, .Div) {
+			second, second_ok := expect_add_or_sub_or_higher(p)
+			return math_op_expr(.Div, first, second), first_ok && second_ok
+		}
+		return first, first_ok
+	}
+	expect_unary_like_or_higher :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
+		if accept_token(p, .Sub) {
+			// negative numeric expressions e.g. -2
+			first, first_ok := expect_unary_like_or_higher(p)
+			return expression(
+					NegateExpression(new_clone(first)),
+					first.range.start_idx - 1,
+					first.range.end_idx,
+				),
+				first_ok
+		} else if accept_token(p, .Not) {
+			// not operator e.g. !myfun()
+			first, first_ok := expect_unary_like_or_higher(p)
+			return expression(
+					NotExpression(new_clone(first)),
+					first.range.start_idx - 1,
+					first.range.end_idx,
+				),
+				first_ok
+		} else {
+			// single value or parens around some expression, then check if function call or indexing directly behind:
+
+			// TODO: check for continuation of the expression via .Dot
+			// - either accesses some value like so:     age := get_person(3).age
+			// - or calls a function with dot noration:  10.mul(3).print()
+			expr_ok: bool
+			expr, expr_ok = expect_single_value(p)
+			if finished(p) {
+				return expr, expr_ok
+			}
+
+			for {
+				if accept_token(p, .Dot) {
+					ident, ident_ok := expect_ident(p)
+					if !ident_ok {
+						start_idx := expr.range.start_idx
+						end_idx := p.current + 1
+						skip(p)
+						add_error(p, "ident expected after dot", {start_idx, end_idx})
+						return invalid_expression(start_idx, end_idx), false
+					}
+					parent := new_clone(expr)
+					expr = expression(AccessOp{parent, ident}, parent.range.start_idx, p.current)
+				} else if accept_left_paren_connected_to_last_token(p) {
+					args := expect_expressions(p)
+					expect_token(p, .RightParen)
+					fn_expr := new_clone(expr)
+					expr = Expression {
+						kind = CallOp{fn_expr, args},
+					}
+				} else if accept_left_bracket_connected_to_last_token(p) {
+					panic("TODO FIX INDEXING LATER!")
+					// index := expect_expression(p) // todo: later support multiple operators in index
+					// expect_token(p, .RightBracket)
+					// place := new_clone(expr)
+					// expr = Expression {
+					// 	kind = IndexOp{place, new_clone(index)},
+					// }
+				} else {
+					// CONTINUE HERE XXX
+					could_be_named_struct_literal := false
+					#partial switch ex in expr.kind {
+					case Ident:
+						could_be_named_struct_literal = true
+					case AccessOp:
+						could_be_named_struct_literal = true
+					case CallOp:
+						could_be_named_struct_literal = true
+					}
+					if could_be_named_struct_literal &&
+					   accept_left_brace_connected_to_last_token(p) {
+						struct_lit := expect_inside_of_struct_literal(p)
+						expect_token(p, .RightBrace)
+						struct_name := new_clone(expr)
+						struct_lit.name = struct_name
+						expr = Expression {
+							kind = struct_lit,
+						}
+					} else {
+						break
+					}
+
+				}
+
+			}
+			return expr, true
+		}
+	}
+	expect_single_value :: proc(p: ^Parser) -> (val: Expression, success: bool) {
+		log("    Detected single value")
+		if finished(p) {
+			add_error(p, "unexpected end of parser", {})
+			return invalid_expression(p.current, p.current), false
+		} else if .CouldBeExpressionStart not_in TOKEN_TYPE_FLAGS[current(p).ty] {
+			add_error(
+				p,
+				tprint("token is not a valid start of an expression: ", current(p).ty),
+				{p.current, p.current + 1},
+			)
+			skip(p)
+			return invalid_expression(p.current, p.current + 1), false
+		}
+		tok := next(p)
+		#partial switch tok.ty {
+		case .LitBool:
+			return expression(LitBool{tok.meta.bool}, p.current - 1, p.current), true
+		case .LitInt:
+			return expression(LitInt{tok.meta.int}, p.current - 1, p.current), true
+		case .LitFloat:
+			return expression(LitFloat{tok.meta.float}, p.current - 1, p.current), true
+		case .LitChar:
+			return expression(LitChar{tok.meta.char}, p.current - 1, p.current), true
+		case .LitString:
+			return expression(LitString{tok.meta.string}, p.current - 1, p.current), true
+		case .LitNone:
+			return expression(LitNone{}, p.current - 1, p.current), true
+		case .Ident:
+			return expression(Ident{tok.meta.string}, p.current - 1, p.current), true
+		case .Enum:
+			// enum {High, Low, Mid}
+			enum_start := p.current
+			if !expect_token(p, .LeftBrace) {
+				add_error(
+					p,
+					"invalid 'enum' token not followed by '{'",
+					{p.current - 1, p.current},
+				)
+				skip(p)
+				return expression(INVALID_EXPRESSION, p.current - 1, p.current), false
+			}
+			variants: [dynamic]Ident
+			for {
+				if ident, is_ident := accept_ident(p); is_ident {
+					append(&variants, ident)
+				} else {
+					cur := current(p)
+					start := p.current
+					end := p.current
+					for {
+						skip(p)
+						if cur.ty == .RightBrace {
+							break
+						}
+						end := p.current
+						cur = current(p)
+					}
+					if start != end {
+						// at least one non ident token in enum def
+						add_error(p, "non ident tokens in enum decl", {start, end})
+					}
+					break
+				}
+			}
+			enum_end := p.current
+			return expression(EnumDecl{variants[:]}, enum_start, enum_end), true
+		case .LeftParen:
+			// there are 3 cases now: 
+			// case 1: a function type:       ( TYPE*  ) -> TYPE
+			// case 2: a function definition: ( [name: TYPE]*  ) [-> TYPE]? { STATEMENT* }
+			// case 3: a paranthesized expression: (EXPRESSION)
+
+			// case 2 always starts by IDENT and then a COLON, which can never be an expression, so this is easy to see.
+			// it is only case 3, if ther is a single expression and after the `)` NO `->`. Otherwise assume this is a function type
+
+			this := current(p)
+			next := peek(p)
+			if this.ty == .Ident && next.ty == .Colon {
+				start_tok := p.current
+				// parse a function definition
+				// expect_function_def_arguments ()
+				fun_def: FunctionDefinition
+				fun_def.args = expect_function_definition_args(p)
+				if !expect_token(p, .RightParen) {
+					return invalid_expression(start_tok, p.current), false
+				}
+
+				// return type arrow is optional, if not present -> None is assumed.
+
+				if accept_token(p, .Arrow) {
+					return_type, _ := expect_expression(p)
+					fun_def.return_type = new_clone(return_type)
+				}
+				if !expect_token(p, .LeftBrace) {
+					return invalid_expression(start_tok, p.current), false
+				}
+				fun_def.body = expect_statements(p)
+				if !expect_token(p, .RightBrace) {
+					return invalid_expression(start_tok, p.current), false
+				}
+				return expression(fun_def, start_tok, p.current), true
+			} else {
+				expr := expect_expression(p)
+				this = current(p)
+				next = peek(p)
+				if this.ty == .RightParen && next.ty != .Arrow {
+					// expression in parentheses
+					skip(p) // skip over the closing .RightParen
+					return expr, nil
+				} else {
+					// function type/signature
+					// parse the rest of the expressions in the arg type list
+					arg_types: [dynamic]Expression = {expr}
+					_expect_expressions(p, &arg_types)
+					expect_token(p, .RightParen)
+					expect_token(p, .Arrow)
+					return_type := expect_expression(p)
+					function_signature := FunctionSignature{arg_types[:], new_clone(return_type)}
+					return Expression{kind = function_signature}, true
+				}
+			}
+			unreachable()
+		case .LeftBracket:
+			// [3,4,5]
+			// could also be type e.g. [int] or [{s: int, f: float}] or [enum{Red, Black}]
+			values := expect_expressions(p)
+			expect_token(p, .RightBracket)
+			return Expression{kind = LitArray{values}}, true
+		case .LeftBrace:
+			struct_start := p.current - 1
+			struct_lit := expect_inside_of_struct_literal(p)
+			if !expect_token(p, .RightBrace) {
+				return expression(INVALID_EXPRESSION, struct_start, p.current)
+			}
+			return Expression{kind = struct_lit}, nil
+		// { age: int, name: string} 
+		// { foo: 2+4, "Hello": 34, "Noob": 40404 }
+		// could also be tuple:
+		// what about named struct literals?   Foo{int: i, var: "3ha"} or Foo {int: i, var: "3ha"}
+		// // todo: struct 
+		// we probably need to be MUCH more context sensitive if the language should work with so little syntax...
+		// for example we need to say if its capitalized, its a type, if its lowercase its a variable or function and so on...
+		// if it starts with underscore it is private
+		}
+		panic(
+			"no token matched start of expression, this case should have been handled in .CouldBeExpressionStart not_in TOKEN_TYPE_FLAGS[current(p).ty]",
+		)
+	}
+}
+
+token_span_merge :: proc(first: []Token, second: []Token) -> []Token {
+	first_ptr := slice.first_ptr(first)
+	last_ptr := slice.last_ptr(second)
+	bytes := int(cast(uintptr)last_ptr - cast(uintptr)first_ptr)
+	TOKEN_SIZE :: size_of(Token)
+	assert(bytes % TOKEN_SIZE == 0)
+	return slice.from_ptr(first_ptr, bytes / TOKEN_SIZE)
+}
+
+expect_function_definition_args :: proc(p: ^Parser) -> (args: []FunctionArg, err: Err) {
+	args_list: [dynamic]FunctionArg
+	for {
+		if current(p).ty == .RightParen {
+			break
+		}
+		name := expect_ident(p)
+		expect_token(p, .Colon)
+		ty := expect_expression(p)
+		append(&args_list, FunctionArg{name, ty})
+	}
+	return args_list[:], nil
+}
+
+// e.g. examples:
+expect_inside_of_struct_literal :: proc(p: ^Parser) -> (lit_struct: LitStruct) {
+	fields: [dynamic]LitStructField
+	for {
+		if current(p).ty == .RightBrace {
+			break
+		}
+		val_or_field_name, success := expect_expression(p)
+		if !success {
+			todo()
+		}
+		if accept_token(p, .Colon) {
+			// named field
+			value, ok := expect_expression(p)
+			if !ok {
+				todo()
+			}
+			append(
+				&fields,
+				LitStructField{name = new_clone(val_or_field_name), value = new_clone(value)},
+			)
+		} else {
+			// unnamed field
+			append(&fields, LitStructField{name = nil, value = new_clone(val_or_field_name)})
+		}
+	}
+	return LitStruct{fields[:], nil}
+}
+
+Module :: struct {
+	statements: []Statement,
+}
+
+
+Expression :: struct {
+	type:  Type,
+	kind:  ExpressionKind,
+	range: TokenRange,
+}
+expression :: proc "contextless" (
+	kind: ExpressionKind,
+	start_token_idx: int,
+	end_token_idx: int,
+) -> Expression {
+	return Expression{nil, kind, TokenRange{start_token_idx, end_token_idx}}
+}
+
+invalid_expression :: proc "contextless" (start_token_idx: int, end_token_idx: int) -> Expression {
+	return Expression{nil, INVALID_EXPRESSION, TokenRange{start_token_idx, end_token_idx}}
+}
+
+// todo: should be struct for tracking type in type inference!
+ExpressionKind :: union #no_nil {
+	InvalidExpression,
+	LogicalOr,
+	LogicalAnd,
+	Comparison,
+	MathOp, // 583/3==4+32    a.foo[3] > - 4   a > b > c
+	// other high precedence operations
+	NegateExpression,
+	NotExpression,
+	CallOp,
+	IndexOp,
+	AccessOp,
+	// simple expressions:
+	Ident,
+	LitBool,
+	LitInt,
+	LitFloat,
+	LitString,
+	LitChar,
+	LitStruct, // this could be a struct definition or a value. e.g. { age: Int, name: String } vs. {age: }
+	LitArray,
+	FunctionSignature,
+	FunctionDefinition,
+	EnumDecl,
+	LitUnionDecl,
+	LitNone,
+}
+INVALID_EXPRESSION :: InvalidExpression{}
+InvalidExpression :: struct {}
+
+// e.g. (int, int, MyArr(string), {a: string, b: {int, int}}) -> {}
+FunctionSignature :: struct {
+	arg_types:   []Expression,
+	return_type: ^Expression,
+}
+
+FunctionDefinition :: struct {
+	args:        []FunctionArg,
+	return_type: Maybe(^Expression), // if nil, this means -> None
+	body:        []Statement,
+}
+
+FunctionArg :: struct {
+	name: Ident,
+	type: Expression,
+}
+
+LogicalAnd :: struct {
+	first:  ^Expression,
+	second: ^Expression,
+}
+
+LogicalOr :: struct {
+	first:  ^Expression,
+	second: ^Expression,
+}
+MathOp :: struct {
+	kind:   MathOpKind,
+	first:  ^Expression,
+	second: ^Expression,
+}
+math_op_expr :: proc(kind: MathOpKind, first: Expression, second: Expression) -> Expression {
+	return Expression {
+		type = nil,
+		kind = MathOp{kind, new_clone(first), new_clone(second)},
+		range = TokenRange{first.range.start_idx, second.range.end_idx},
+	}
+}
+MathOpKind :: enum {
+	Add,
+	Sub,
+	Mul,
+	Div,
+}
+Comparison :: struct {
+	first:  ^Expression,
+	others: []ComparisonElement,
+}
+ComparisonElement :: struct {
+	kind: ComparisonKind,
+	expr: Expression,
+}
+ComparisonKind :: enum {
+	NotEqual,
+	Equal,
+	Greater,
+	GreaterEqual,
+	Less,
+	LessEqual,
+}
+
+Statement :: union #no_nil {
+	Assignment,
+	Declaration,
+	Expression,
+	IfBlock,
+	ForLoop,
+	BreakStatement,
+	ReturnStatement,
+}
+
+BreakStatement :: struct {}
+ReturnStatement :: struct {
+	value: Maybe(Expression),
+}
+
+IfBlock :: struct {
+	condition:  Expression,
+	body:       []Statement,
+	else_block: union {
+		// can be nil!
+		^ElseBlock,
+		^IfBlock,
+	},
+}
+ElseBlock :: struct {
+	body: []Statement,
+}
+
+
+ForLoopKind :: union {
+	ConditionalLoop,
+	IteratorLoop,
+}
+ConditionalLoop :: distinct Expression
+IteratorLoop :: struct {
+	variable: Ident,
+	iterator: Expression,
+}
+ForLoop :: struct {
+	kind: ForLoopKind, // can be nil, then infinite loop
+	body: []Statement,
+}
+
+Assignment :: struct {
+	place: AssignmentPlace,
+	kind:  AssignmentKind,
+	value: Expression,
+}
+AssignmentPlace :: union #no_nil {
+	Ident,
+	AccessOp,
+	IndexOp,
+}
+AssignmentKind :: enum {
+	Assign,
+	AddAssign,
+	SubAssign,
+	MulAssign,
+	DivAssign,
+}
+NotExpression :: distinct ^Expression
+NegateExpression :: distinct ^Expression
+// IdentPath :: distinct []Ident
+CallOp :: struct {
+	function: ^Expression,
+	args:     []Expression, // todo: named args
+}
+IndexOp :: struct {
+	place: ^Expression,
+	index: ^Expression, // todo: support df["col1", "col3"] with []Expression
+}
+AccessOp :: struct {
+	parent: ^Expression,
+	ident:  Ident,
+}
+Ident :: struct {
+	name: string,
+}
+LitBool :: struct {
+	value: bool,
+}
+LitInt :: struct {
+	value: i64,
+}
+LitFloat :: struct {
+	value: f64,
+}
+LitString :: struct {
+	value: string,
+}
+LitChar :: struct {
+	value: rune,
+}
+LitNone :: struct {}
+
+LitStruct :: struct {
+	fields: []LitStructField,
+	name:   Maybe(^Expression), // e.g. Foo{1,2}
+	// todo: map literals in struct, e.g. {name: "Tadeo", 3: .Nice, 6: .Large}
+	// for a type that is {name: string, int: MyEnum}
+}
+LitStructField :: struct {
+	name:  Maybe(^Expression), // expression? or ident??? What about maps like { {2,3}: "Hello", {3,4}: "What"  }
+	value: ^Expression,
+}
+LitTuple :: struct {
+	values: []Expression,
+}
+EnumDecl :: struct {
+	variants: []Ident,
+}
+LitUnionDecl :: struct {
+	variants: []Expression,
+}
+LitArray :: struct {
+	values: []Expression,
+}
+
+Declaration :: struct {
+	ident: Ident,
+	kind:  DeclarationKind,
+	ty:    Maybe(Expression),
+	value: Maybe(Expression),
+}
+
+DeclarationKind :: enum {
+	ConstExplicit, // foo : float : 4
+	ConstInferred, // foo :: 4
+	RuntimeExplicit, // foo : int = 4
+	RuntimeInferred, // foo :: 4
+	RuntimeExplicitDefault, // foo: int
+}
+
+
+TokenFlags :: bit_set[TokenFlag]
+TokenFlag :: enum {
+	CouldBeStatementStart,
+	CouldBeExpressionStart,
+	IsComparisonOperator,
+	CouldBeAfterStatements,
+}
+
+
+has_flag :: proc(ty: TokenType, flag: TokenFlag) -> bool {
+	return flag in TOKEN_TYPE_FLAGS[ty]
+}
+
+TOKEN_TYPE_FLAGS: [TokenType]TokenFlags = {}
+init_token_type_flags :: proc() {
+	set :: proc(flag: TokenFlag, tys: []TokenType) {
+		for ty in tys {
+			TOKEN_TYPE_FLAGS[ty] += {flag}
+		}
+	}
+	set(
+		.CouldBeStatementStart,
+		{
+			.If,
+			.For,
+			.Switch,
+			.Ident,
+			.LitBool,
+			.LitInt,
+			.LitFloat,
+			.LitString,
+			.LitChar,
+			.LitNone,
+			.LeftParen,
+			.LeftBracket,
+			.LeftBrace,
+			.Break,
+			.Return,
+		},
+	)
+	set(
+		.CouldBeExpressionStart,
+		{
+			.Ident,
+			.LitBool,
+			.LitInt,
+			.LitFloat,
+			.LitString,
+			.LitChar,
+			.LitNone,
+			.LeftParen,
+			.LeftBracket,
+			.LeftBrace,
+			.Sub,
+			.Not,
+			.Enum,
+		},
+	)
+	set(.IsComparisonOperator, {.Greater, .GreaterEqual, .Less, .LessEqual, .Equal, .NotEqual})
+	set(.CouldBeAfterStatements, {.Eof, .RightBrace})
+}
+
+
+/*
+// this stuff should be legal:
+
+i := j := 3
+
+21
+
+32432 + 323
+
+
+if i := print(2) {
+
+
+}
+
+
+foo :: () -> int | None {
+    if bool.random(0.4) {
+        return 19
+    } else {
+        return None
+    }
+}
+
+for val := foo() {
+
+
+
+}
+
+*/

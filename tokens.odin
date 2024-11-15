@@ -32,12 +32,9 @@ TokenMetadata :: struct #raw_union {
 ConnectedToLastToken :: distinct bool
 
 
-tokens_to_string :: proc(tokens: []Token) -> string {
-	return ""
-}
-
 TokenType :: enum {
 	Error,
+	StatementSeperator,
 	Eof,
 	LeftBrace,
 	RightBrace,
@@ -113,6 +110,7 @@ CharType :: enum u8 {
 	Letter, // default
 	Numeric,
 	WhiteSpace,
+	WhiteSpaceLineBreak,
 	LeftBrace,
 	RightBrace,
 	LeftBracket,
@@ -150,7 +148,8 @@ init_char_types :: proc() {
 		}
 	}
 	set("0123456789", .Numeric)
-	set(",; \n\t\r\v", .WhiteSpace)
+	set(",; \t\v", .WhiteSpace)
+	set("\n\r", .WhiteSpaceLineBreak)
 	set("{", .LeftBrace)
 	set("}", .RightBrace)
 	set("[", .LeftBracket)
@@ -270,12 +269,23 @@ ident_or_keyword_token :: proc(name: string) -> Token {
 
 scan_token :: proc(s: ^Scanner) -> Token {
 	#partial switch s.current.ty {
-	case .WhiteSpace:
+	case .WhiteSpace, .WhiteSpaceLineBreak:
 		s.white_space_since_last_token = true
 		advance(s)
 		// zoom over all whitespace but dont emit a token for it.
-		for s.current.ty == .WhiteSpace {
-			advance(s)
+		had_line_break_already := false
+		for {
+			if s.current.ty == .WhiteSpace {
+				advance(s)
+			} else if s.current.ty == .WhiteSpaceLineBreak {
+				advance(s)
+				if had_line_break_already { 	// two line breaks cause a break between statements 
+					return token(.StatementSeperator)
+				}
+				had_line_break_already = true
+			} else {
+				break
+			}
 		}
 		if s.current.byte == s.peek.byte {
 			return token(.Eof)
@@ -286,6 +296,9 @@ scan_token :: proc(s: ^Scanner) -> Token {
 		start_byte := s.current.byte
 		for (s.peek.ty == .Letter || s.peek.ty == .Numeric) {
 			advance(s)
+			if s.peek.size == 0 {
+				break
+			}
 		}
 		ident_name := s.source[start_byte:s.peek.byte]
 		return ident_or_keyword_token(ident_name)
@@ -437,6 +450,32 @@ scan_token :: proc(s: ^Scanner) -> Token {
 token :: #force_inline proc(ty: TokenType) -> Token {
 	return Token{ty = ty, meta = {}}
 }
+literal :: proc {
+	literal_string,
+	literal_bool,
+	literal_int,
+	literal_char,
+	literal_float,
+}
+ident :: proc(name: string) -> Token {
+	return Token{ty = .Ident, meta = {string = name}}
+}
+literal_string :: proc(s: string) -> Token {
+	return Token{ty = .LitString, meta = {string = s}}
+}
+literal_bool :: proc(b: bool) -> Token {
+	return Token{ty = .LitBool, meta = {bool = b}}
+}
+literal_int :: proc(i: int) -> Token {
+	return Token{ty = .LitInt, meta = {int = i64(i)}}
+}
+literal_char :: proc(ch: rune) -> Token {
+	return Token{ty = .LitChar, meta = {char = ch}}
+}
+literal_float :: proc(f: float) -> Token {
+	return Token{ty = .LitFloat, meta = {float = f64(f)}}
+}
+
 
 error_token :: #force_inline proc(err: string) -> Token {
 	return Token{ty = .Error, meta = {string = err}}
@@ -465,7 +504,8 @@ tokenize :: proc(source: string) -> (res: [dynamic]Token, err: Maybe(string)) {
 	return res, nil
 
 }
-print_tokens :: proc(tokens: []Token, line_break := false) {
+
+tokens_to_string :: proc(tokens: []Token, line_break := false) -> string {
 	s: strings.Builder
 	for token, i in tokens {
 		strings.write_string(&s, tprint(token.ty))
@@ -492,7 +532,7 @@ print_tokens :: proc(tokens: []Token, line_break := false) {
 			}
 		}
 	}
-	print(strings.to_string(s))
+	return strings.to_string(s)
 }
 
 // token_could_be_start :: proc(t: TokenType) -> bool {
@@ -640,6 +680,8 @@ token_as_code :: proc(t: Token) -> string {
 	switch t.ty {
 	case .Error:
 		panic("error")
+	case .StatementSeperator:
+		return "\n\n"
 	case .Eof:
 		return "EOF"
 	case .LeftBrace:
