@@ -451,28 +451,28 @@ token :: #force_inline proc(ty: TokenType) -> Token {
 	return Token{ty = ty, meta = {}}
 }
 literal :: proc {
-	literal_string,
-	literal_bool,
-	literal_int,
-	literal_char,
-	literal_float,
+	lit_string,
+	lit_bool,
+	lit_int,
+	lit_char,
+	lit_float,
 }
 ident :: proc(name: string) -> Token {
 	return Token{ty = .Ident, meta = {string = name}}
 }
-literal_string :: proc(s: string) -> Token {
+lit_string :: proc(s: string) -> Token {
 	return Token{ty = .LitString, meta = {string = s}}
 }
-literal_bool :: proc(b: bool) -> Token {
+lit_bool :: proc(b: bool) -> Token {
 	return Token{ty = .LitBool, meta = {bool = b}}
 }
-literal_int :: proc(i: int) -> Token {
+lit_int :: proc(i: int) -> Token {
 	return Token{ty = .LitInt, meta = {int = i64(i)}}
 }
-literal_char :: proc(ch: rune) -> Token {
+lit_char :: proc(ch: rune) -> Token {
 	return Token{ty = .LitChar, meta = {char = ch}}
 }
-literal_float :: proc(f: float) -> Token {
+lit_float :: proc(f: float) -> Token {
 	return Token{ty = .LitFloat, meta = {float = f64(f)}}
 }
 

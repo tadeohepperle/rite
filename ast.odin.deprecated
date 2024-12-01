@@ -104,7 +104,6 @@ accept_ident :: proc(p: ^Parser) -> (Ident, bool) {
 	}
 	cur := p.tokens[p.current]
 	if cur.ty == .Ident {
-		log("Accepted ident: ", cur.meta.string)
 		p.current += 1
 		return Ident{cur.meta.string}, true
 	}
@@ -120,7 +119,6 @@ accept_left_paren_connected_to_last_token :: proc(p: ^Parser) -> bool {
 	}
 	return accepted
 }
-
 accept_left_bracket_connected_to_last_token :: proc(p: ^Parser) -> bool {
 	cur := p.tokens[p.current]
 	accepted := cur.ty == .LeftBracket && bool(cur.meta.connected_to_last_token)
@@ -130,7 +128,6 @@ accept_left_bracket_connected_to_last_token :: proc(p: ^Parser) -> bool {
 	}
 	return accepted
 }
-
 
 accept_left_brace_connected_to_last_token :: proc(p: ^Parser) -> bool {
 	cur := p.tokens[p.current]

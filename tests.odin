@@ -4,10 +4,28 @@ import "core:strings"
 import "core:testing"
 
 main :: proc() {
-	tokenize_test(nil)
+
+	// expr := expression_from_string("4 + 5 * {1,2,3} + 5")
+	expr := expression_from_string("8 * (4-4:)")
+	print(expression_to_string(expr))
+	// parse_expressions_test(nil)
 }
 
 
+@(test)
+parse_expressions_test :: proc(t: ^testing.T) {
+	ok_expressions := []string{`4`, `4+6`, `"hello"`}
+	bad_expressions := []string{`.5`}
+	for ok in ok_expressions {
+		ex := expression_from_string(ok)
+		testing.expectf(
+			t,
+			expression_valid(ex),
+			"expression %s not valid",
+			expression_to_string(ex),
+		)
+	}
+}
 @(test)
 tokenize_test :: proc(t: ^testing.T) {
 	Pair :: struct {
@@ -16,11 +34,8 @@ tokenize_test :: proc(t: ^testing.T) {
 	}
 	test_cases: []Pair = {
 		{"hello", {ident("hello")}},
-		{"1 3 4", {literal_int(1), literal_int(3), literal_int(4)}},
-		{
-			"A :: 3+4",
-			{ident("A"), token(.ColonColon), literal_int(3), token(.Add), literal_int(4)},
-		},
+		{"1 3 4", {lit_int(1), lit_int(3), lit_int(4)}},
+		{"A :: 3+ 4", {ident("A"), token(.ColonColon), lit_int(3), token(.Add), lit_int(4)}},
 	}
 
 	for c in test_cases {
@@ -29,26 +44,6 @@ tokenize_test :: proc(t: ^testing.T) {
 		test_expect_tokens(t, tokens[:], c.tokens)
 	}
 }
-
-
-// @(test)
-// parse_expressions_test :: proc(t: ^testing.T) {
-// 	ok_expressions := []string{`4`, `hello`, `"hello"`}
-// 	bad_expressions := []string{`.5`}
-// 	for ok in ok_expressions {
-// 		print("test for ", ok)
-// 		ex := expression_from_string(ok)
-
-// 		print(ok, ex)
-// 		testing.expectf(
-// 			t,
-// 			expression_valid(ex),
-// 			"expression %s not valid",
-// 			expression_to_string(ex),
-// 		)
-// 		print("----------------------")
-// 	}
-// }
 
 
 // tokenize_test :: proc() {
