@@ -31,7 +31,7 @@ module_to_string :: proc(mod: Module) -> string {
 statement_to_string :: proc(stmnt: Statement, indent: string = "") -> string {
 	switch s in stmnt {
 	case Assignment:
-		place := expression_to_string(assignment_place_as_expression(s.place))
+		place := expression_to_string(s.place)
 		assign := assignment_kind_to_long_string(s.kind)
 		value := expression_to_string(s.value, indent)
 		return tprint(indent, assign, "(", place, ", ", value, ")")
@@ -69,7 +69,7 @@ statement_to_string :: proc(stmnt: Statement, indent: string = "") -> string {
 		}
 		write(b, indent, "}")
 		switch else_block in s.else_block {
-		case ^ElseBlock:
+		case ElseBlock:
 			write(b, " else {\n")
 			for inner_stmnt in else_block.body {
 				write(b, statement_to_string(inner_stmnt, inner_indent), "\n")
@@ -86,7 +86,7 @@ statement_to_string :: proc(stmnt: Statement, indent: string = "") -> string {
 		kind_str := ""
 		switch kind in s.kind {
 		case ConditionalLoop:
-			kind_str = tprint(" ", expression_to_string(Expression(kind)))
+			kind_str = tprint(" ", expression_to_string(kind.condition))
 		case IteratorLoop:
 			kind_str = tprint(" ", kind.variable.name, " in ", expression_to_string(kind.iterator))
 		}
@@ -137,7 +137,13 @@ comparison_kind_to_string :: proc(cmp_kind: ComparisonKind) -> string {
 expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 	switch ex in expr.kind {
 	case InvalidExpression:
-		return "InvalidExpression"
+		return tprint(
+			"InvalidExpression(",
+			ex.msg,
+			", got `",
+			tokens_as_code(ex.tokens_slice),
+			"`)",
+		)
 	case LogicalOr:
 		return two_arg_expr_to_string("OR", ex.first^, ex.second^)
 	case LogicalAnd:
@@ -177,9 +183,9 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 	case FunctionDefinition:
 		return function_definition_to_string(ex, indent)
 	case NegateExpression:
-		return tprint("MINUS(", expression_to_string(ex^), ")")
+		return tprint("MINUS(", expression_to_string(ex.inner^), ")")
 	case NotExpression:
-		return tprint("NOT(", expression_to_string(ex^), ")")
+		return tprint("NOT(", expression_to_string(ex.inner^), ")")
 	case CallOp:
 		function := expression_to_string(ex.function^)
 		builder := strings.builder_make(context.temp_allocator)
@@ -219,21 +225,31 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 		return strings.to_string(builder)
 	case LitStruct:
 		builder := strings.builder_make(context.temp_allocator)
+
 		b := &builder
-		if name, ok := ex.name.(^Expression); ok {
+		if name, ok := ex.name_or_brace_token_idx.(^Expression); ok {
 			write(b, expression_to_string(name^))
 		}
+
 		write(b, "{ ")
-		for field, i in ex.fields {
-			if i != 0 {
-				write(b, ", ")
+		switch fields in ex.fields {
+		case []Expression:
+			for value, i in fields {
+				if i != 0 {
+					write(b, ", ")
+				}
+				write(b, expression_to_string(value))
 			}
-			if name, is_named := field.name.(^Expression); is_named {
-				write(b, expression_to_string(name^), ": ")
+		case []NamedField:
+			for field, i in fields {
+				if i != 0 {
+					write(b, ", ")
+				}
+				write(b, field.name.name, ": ")
+				write(b, expression_to_string(field.value))
 			}
-			write(b, expression_to_string(field.value^))
 		}
-		write(b, " }")
+		write(b, "}" if ex.fields == nil else " }")
 		return strings.to_string(builder)
 	case LitArray:
 		builder := strings.builder_make(context.temp_allocator)
@@ -247,7 +263,19 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 		}
 		write(b, "]")
 		return strings.to_string(builder)
-	case EnumDecl:
+	case LitMap:
+		builder := strings.builder_make(context.temp_allocator)
+		b := &builder
+		write(b, "[")
+		for e, i in ex.entries {
+			if i != 0 {
+				write(b, ", ")
+			}
+			write(b, expression_to_string(e.key), ": ", expression_to_string(e.value))
+		}
+		write(b, "]")
+		return strings.to_string(builder)
+	case LitEnumType:
 		builder := strings.builder_make(context.temp_allocator)
 		b := &builder
 		write(b, "ENUM_DEF(")
@@ -259,7 +287,7 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 		}
 		write(b, ")")
 		return strings.to_string(builder)
-	case LitUnionDecl:
+	case LitUnionType:
 		todo()
 	case LitNone:
 		return "None"
@@ -274,7 +302,7 @@ function_definition_to_string :: proc(fun_def: FunctionDefinition, indent: strin
 		if i != 0 {
 			write(b, ", ")
 		}
-		write(b, arg.name.name, ": ", expression_to_string(arg.type))
+		write(b, arg.name.name, ": ", expression_to_string(arg.ty))
 	}
 
 	if return_ty, ok := fun_def.return_type.(^Expression); ok {
@@ -324,18 +352,6 @@ assignment_kind_to_long_string :: proc(kind: AssignmentKind) -> string {
 		return "MUL_ASSIGN"
 	case .DivAssign:
 		return "DIV_ASSIGN"
-	}
-	unreachable()
-}
-
-assignment_place_as_expression :: proc(place: AssignmentPlace) -> Expression {
-	switch place in place {
-	case AccessOp:
-		return Expression{kind = place}
-	case Ident:
-		return Expression{kind = place}
-	case IndexOp:
-		return Expression{kind = place}
 	}
 	unreachable()
 }
@@ -531,12 +547,260 @@ module_from_string :: proc(s: string) -> Module {
 	return parse(tokens[:])
 }
 
+statement_slice_eq :: proc(a: []Statement, b: []Statement) -> bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for a_val, i in a {
+		b_val := b[i]
+		statement_eq(a_val, b_val) or_return
+	}
+	return true
+}
+if_statement_eq :: proc(a: IfStatement, b: IfStatement) -> bool {
+	expression_eq(a.condition, b.condition) or_return
+	statement_slice_eq(a.body, b.body) or_return
+	switch el_a in a.else_block {
+	case nil:
+		if b.else_block != nil {
+			return false
+		}
+	case ElseBlock:
+		el_b := b.else_block.(ElseBlock) or_return
+		return statement_slice_eq(el_a.body, el_b.body)
+	case ^IfStatement:
+		el_b := b.else_block.(^IfStatement) or_return
+		return if_statement_eq(el_a^, el_b^)
+	}
+	return true
+}
+statement_eq :: proc(a_stmt: Statement, b_stmt: Statement) -> bool {
+	switch a in a_stmt {
+	case Assignment:
+		b := b_stmt.(Assignment) or_return
+		if a.kind != b.kind {
+			return false
+		}
+		expression_eq(a.place, b.place) or_return
+		expression_eq(a.value, b.value) or_return
+	case Declaration:
+		b := b_stmt.(Declaration) or_return
+		if a.kind != b.kind {
+			return false
+		}
+		maybe_expression_eq(a.ty, b.ty) or_return
+		maybe_expression_eq(a.value, b.value) or_return
+	case Expression:
+		b := b_stmt.(Expression) or_return
+		return expression_eq(a, b)
+	case IfStatement:
+		b := b_stmt.(IfStatement) or_return
+		return if_statement_eq(a, b)
+	case ForStatement:
+		b := b_stmt.(ForStatement) or_return
+		switch a_kind in a.kind {
+		case nil:
+			if b.kind != nil {
+				return false
+			}
+		case ConditionalLoop:
+			b_kind := b.kind.(ConditionalLoop) or_return
+			expression_eq(a_kind.condition, b_kind.condition) or_return
+		case IteratorLoop:
+			b_kind := b.kind.(IteratorLoop) or_return
+			expression_eq(a_kind.iterator, b_kind.iterator) or_return
+			if a_kind.variable.name != b_kind.variable.name {
+				return false
+			}
+		}
+		statement_slice_eq(a.body, b.body) or_return
+	case BreakStatement:
+		b := b_stmt.(BreakStatement) or_return
+	case ReturnStatement:
+		b := b_stmt.(ReturnStatement) or_return
+		maybe_expression_eq(a.value, b.value) or_return
+	}
+	return true
+}
+expression_slice_eq :: proc(a: []Expression, b: []Expression) -> bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for a_val, i in a {
+		b_val := b[i]
+		expression_eq(a_val, b_val) or_return
+	}
+	return true
+}
+named_field_slice_eq :: proc(a: []NamedField, b: []NamedField) -> bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for a_field, i in a {
+		b_field := b[i]
+		expression_eq(a_field.value, b_field.value) or_return
+		if a_field.name.name != b_field.name.name {
+			return false
+		}
+	}
+	return true
+}
+function_arg_slice_eq :: proc(a: []FunctionArg, b: []FunctionArg) -> bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for a_field, i in a {
+		b_field := b[i]
+		expression_eq(a_field.ty, b_field.ty) or_return
+		if a_field.name.name != b_field.name.name {
+			return false
+		}
+	}
+	return true
+}
 
-test_expect_tokens :: proc(t: ^testing.T, got: []Token, expected: []Token) {
-	got := got
-	assert(expected[len(expected) - 1].ty != .Eof)
-	if got[len(got) - 1].ty == .Eof {
-		got = got[:len(got) - 1]
+maybe_expression_ptr_eq :: proc(a_ex: Maybe(^Expression), b_ex: Maybe(^Expression)) -> bool {
+	a, a_is_expr := a_ex.(^Expression)
+	b, b_is_expr := b_ex.(^Expression)
+	if a_is_expr != b_is_expr {
+		return false
+	}
+	if a_is_expr {
+		return expression_eq(a^, b^)
+	}
+	return true
+}
+maybe_expression_eq :: proc(a_ex: Maybe(Expression), b_ex: Maybe(Expression)) -> bool {
+	a, a_is_expr := a_ex.(Expression)
+	b, b_is_expr := b_ex.(Expression)
+	if a_is_expr != b_is_expr {
+		return false
+	}
+	if a_is_expr {
+		return expression_eq(a, b)
+	}
+	return true
+}
+expression_eq :: proc(a_ex: Expression, b_ex: Expression) -> bool {
+	switch a in a_ex.kind {
+	case InvalidExpression:
+		b := b_ex.kind.(InvalidExpression) or_return
+		return b.msg == a.msg
+	case LogicalOr:
+		b := b_ex.kind.(LogicalOr) or_return
+		return expression_eq(a.first^, b.first^) && expression_eq(a.second^, b.second^)
+	case LogicalAnd:
+		b := b_ex.kind.(LogicalAnd) or_return
+		return expression_eq(a.first^, b.first^) && expression_eq(a.second^, b.second^)
+	case Comparison:
+		b := b_ex.kind.(Comparison) or_return
+	case MathOp:
+		b := b_ex.kind.(MathOp) or_return
+		return(
+			a.kind == b.kind &&
+			expression_eq(a.first^, b.first^) &&
+			expression_eq(a.second^, b.second^) \
+		)
+	case NegateExpression:
+		b := b_ex.kind.(NegateExpression) or_return
+		return expression_eq(a.inner^, b.inner^)
+	case NotExpression:
+		b := b_ex.kind.(NotExpression) or_return
+		return expression_eq(a.inner^, b.inner^)
+	case CallOp:
+		b := b_ex.kind.(CallOp) or_return
+		expression_eq(a.function^, b.function^) or_return
+		expression_slice_eq(a.args, b.args) or_return
+	case IndexOp:
+		b := b_ex.kind.(IndexOp) or_return
+		return expression_eq(a.place^, b.place^) && expression_eq(a.index^, b.index^)
+	case AccessOp:
+		b := b_ex.kind.(AccessOp) or_return
+		return expression_eq(a.parent^, b.parent^) && a.ident.name == b.ident.name
+	case Ident:
+		b := b_ex.kind.(Ident) or_return
+		return a.name == b.name
+	case LitBool:
+		b := b_ex.kind.(LitBool) or_return
+		return a.value == b.value
+	case LitInt:
+		b := b_ex.kind.(LitInt) or_return
+		return a.value == b.value
+	case LitFloat:
+		b := b_ex.kind.(LitFloat) or_return
+		return a.value == b.value
+	case LitString:
+		b := b_ex.kind.(LitString) or_return
+		return a.value == b.value
+	case LitChar:
+		b := b_ex.kind.(LitChar) or_return
+		return a.value == b.value
+	case LitStruct:
+		b := b_ex.kind.(LitStruct) or_return
+		switch a_fields in a.fields {
+		case nil:
+			if b.fields != nil {
+				return false
+			}
+		case []NamedField:
+			b_fields := b.fields.([]NamedField) or_return
+			named_field_slice_eq(a_fields, b_fields) or_return
+		case []Expression:
+			b_fields := b.fields.([]Expression) or_return
+			expression_slice_eq(a_fields, b_fields) or_return
+		}
+		if a_name, ok := a.name_or_brace_token_idx.(^Expression); ok {
+			b_name := b.name_or_brace_token_idx.(^Expression) or_return
+			expression_eq(a_name^, b_name^) or_return
+		}
+	case LitArray:
+		b := b_ex.kind.(LitArray) or_return
+		expression_slice_eq(a.values, b.values) or_return
+	case LitMap:
+		b := b_ex.kind.(LitMap) or_return
+		if len(a.entries) != len(b.entries) {
+			return false
+		}
+		for a_pair, i in a.entries {
+			b_pair := b.entries[i]
+			expression_eq(a_pair.key, b_pair.key) or_return
+			expression_eq(a_pair.value, b_pair.value) or_return
+		}
+	case FunctionSignature:
+		b := b_ex.kind.(FunctionSignature) or_return
+		expression_slice_eq(a.arg_types, b.arg_types) or_return
+		expression_eq(a.return_type^, b.return_type^) or_return
+	case FunctionDefinition:
+		b := b_ex.kind.(FunctionDefinition) or_return
+		function_arg_slice_eq(a.args, b.args) or_return
+		maybe_expression_ptr_eq(a.return_type, b.return_type) or_return
+		statement_slice_eq(a.body, b.body) or_return
+	case LitEnumType:
+		b := b_ex.kind.(LitEnumType) or_return
+		if len(a.variants) != len(b.variants) {
+			return false
+		}
+		for a_var, i in a.variants {
+			b_var := b.variants[i]
+			if a_var.name != b_var.name {
+				return false
+			}
+		}
+	case LitUnionType:
+		b := b_ex.kind.(LitUnionType) or_return
+		todo()
+	case LitNone:
+		b := b_ex.kind.(LitNone) or_return
+	}
+	return true
+}
+
+test_expect_tokens_equal :: proc(t: ^testing.T, got: []Token, expected: []Token) {
+	for el in got {
+		assert(el.ty != .Eof)
+	}
+	for el in expected {
+		assert(el.ty != .Eof)
 	}
 	min_len := min(len(got), len(expected))
 	for i in 0 ..< min_len {

@@ -45,3 +45,30 @@ for constants, we probably need two passes: one for type inference, one for actu
 
 lets do the type one first.
 
+
+
+case InvalidExpression:
+case LogicalOr:
+case LogicalAnd:
+case Comparison:
+case MathOp: 
+case NegateExpression:
+case NotExpression:
+case CallOp:
+case IndexOp:
+case AccessOp:
+case Ident:
+case LitBool:
+case LitInt:
+case LitFloat:
+case LitString:
+case LitChar:
+case LitStruct:
+case LitEmptyStruct:
+case LitArray:
+case LitMap:
+case FunctionSignature:
+case FunctionDefinition:
+case LitEnumType:
+case LitUnionType:
+case LitNone:

@@ -32,7 +32,7 @@ TokenMetadata :: struct #raw_union {
 ConnectedToLastToken :: distinct bool
 
 
-TokenType :: enum {
+TokenType :: enum u8 {
 	Error,
 	StatementSeperator,
 	Eof,
@@ -494,12 +494,11 @@ tokenize :: proc(source: string) -> (res: [dynamic]Token, err: Maybe(string)) {
 		s.white_space_since_last_token = false
 		if token.ty == .Error {
 			return res, token.meta.string
+		} else if token.ty == .Eof {
+			break
 		} else {
 			append(&res, token)
 		}
-	}
-	if len(res) == 0 || res[len(res) - 1].ty != .Eof {
-		append_elem(&res, token(.Eof))
 	}
 	return res, nil
 
@@ -644,13 +643,9 @@ needs_zero_space_right :: proc(t: TokenType) -> bool {
 	}
 	return false
 }
-
-
-print_tokens_as_code :: proc(tokens: []Token) {
+tokens_as_code :: proc(tokens: []Token) -> string {
 	s: strings.Builder
 	last_t := Token{}
-
-
 	scope_level := 0
 	for t, i in tokens {
 		scope_level += scope_level_change(t.ty)
@@ -674,8 +669,10 @@ print_tokens_as_code :: proc(tokens: []Token) {
 		strings.write_string(&s, token_as_code(t))
 		last_t = t
 	}
-	print(strings.to_string(s))
+	return strings.to_string(s)
 }
+
+
 token_as_code :: proc(t: Token) -> string {
 	switch t.ty {
 	case .Error:

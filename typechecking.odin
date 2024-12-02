@@ -296,12 +296,12 @@ add_type_to_expression_unrestricted :: proc(types: ^Types, expr: ^Expression) {
 		}
 		expr.type = BOOL_TYPE
 	case MathOp:
-	// look up add fn maybe???
-
+		// look up add fn maybe???
+		todo()
 	case NegateExpression:
-		add_type_to_expression_unrestricted(types, cast(^Expression)ex)
+		add_type_to_expression_unrestricted(types, ex.inner)
 	case NotExpression:
-		add_type_to_expression_expected(types, cast(^Expression)ex, BOOL_TYPE)
+		add_type_to_expression_expected(types, ex.inner, BOOL_TYPE)
 		assert(expr.type == BOOL_TYPE)
 	case CallOp:
 	case IndexOp:
@@ -319,11 +319,13 @@ add_type_to_expression_unrestricted :: proc(types: ^Types, expr: ^Expression) {
 	case LitChar:
 		expr.type = CHAR_TYPE
 	case LitStruct:
+		todo()
 	case LitArray:
+	case LitMap:
 	case FunctionSignature:
 	case FunctionDefinition:
-	case EnumDecl:
-	case LitUnionDecl:
+	case LitEnumType:
+	case LitUnionType:
 		union_ty: Type
 		// todo
 		expr.type = TYPE_TYPE

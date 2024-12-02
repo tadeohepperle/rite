@@ -1,27 +1,190 @@
 package rite
+import "base:runtime"
+import "core:debug/trace"
 import "core:log"
 import "core:strings"
 import "core:testing"
 
 main :: proc() {
-
+	// context.logger = log.create_console_logger()
 	// expr := expression_from_string("4 + 5 * {1,2,3} + 5")
-	expr := expression_from_string("8 * (4-4:)")
-	print(expression_to_string(expr))
+
+
+	TEST1 :: `() {
+		print("Hello") * 99
+	}`
+
+
+	mod := module_from_string(
+		`main ::  () {
+			print("Hello") * 99
+			a := 3.33
+			b : int = {"no", 3.2}.inverted(3)
+			a := b := c
+		}`,
+	)
+	print(module_to_string(mod))
 	// parse_expressions_test(nil)
 }
 
 
 @(test)
 parse_expressions_test :: proc(t: ^testing.T) {
+	Case :: struct {
+		source: string,
+		expr:   Expression,
+	}
+	TEST_EXPRESSIONS := []Case {
+		Case{"7 + 3 * 2", add(i(7), mul(i(3), i(2)))},
+		Case {
+			"(i: int, j: float) -> None {}",
+			fn_def({{ident("i"), id("int")}, {ident("j"), id("float")}}, return_ty = none()),
+		},
+		Case{"(i: int, j: float){}", fn_def({{ident("i"), id("int")}, {ident("j"), id("float")}})},
+		Case {
+			"(int, int, Foo) -> string",
+			fn_signature({id("int"), id("int"), id("Foo")}, id("string")),
+		},
+		Case{"foo(2, 3)", fn_call(id("foo"), {i(2), i(3)})},
+		Case{"{int, string, Foo}", tuple({id("int"), id("string"), id("Foo")})},
+		Case {
+			"{foo: 3, bar: \"Hello\"}",
+			record({{ident("foo"), i(3)}, {ident("bar"), s("Hello")}}),
+		},
+		Case {
+			"{bar: {1 3 true}, arr_of_floats: [2.0,3.2] }",
+			record(
+				{
+					NamedField{ident("bar"), tuple({i(1), i(3), b(true)})},
+					NamedField{ident("arr_of_floats"), array({f(2.0), f(3.2)})},
+				},
+			),
+		},
+		Case {
+			`() {
+				print("Hello") * 99
+			}`,
+			fn_def({}, nil, []Statement{mul(fn_call(id("print"), {s("Hello")}), i(99))}),
+		},
+	}
+
+	for test_case in TEST_EXPRESSIONS {
+		expr := expression_from_string(test_case.source)
+		testing.expect(
+			t,
+			expression_eq(expr, test_case.expr),
+			tprint("expressions not equal. Expected: ", test_case.expr, "\n Parsed: ", expr),
+		)
+	}
+
+	i :: proc(i: int) -> Expression {
+		return expression(LitInt{i64(i), 0})
+	}
+	f :: proc(f: float) -> Expression {
+		return expression(LitFloat{f, 0})
+	}
+	s :: proc(s: string) -> Expression {
+		return expression(LitString{s, 0})
+	}
+	b :: proc(b: bool) -> Expression {
+		return expression(LitBool{b, 0})
+	}
+	none :: proc() -> Expression {
+		return expression(LitNone{0})
+	}
+	add :: proc(a: Expression, b: Expression) -> Expression {
+		return expression(MathOp{.Add, new_clone(a), new_clone(b)})
+	}
+	sub :: proc(a: Expression, b: Expression) -> Expression {
+		return expression(MathOp{.Sub, new_clone(a), new_clone(b)})
+	}
+	mul :: proc(a: Expression, b: Expression) -> Expression {
+		return expression(MathOp{.Mul, new_clone(a), new_clone(b)})
+	}
+	div :: proc(a: Expression, b: Expression) -> Expression {
+		return expression(MathOp{.Div, new_clone(a), new_clone(b)})
+	}
+	assign :: proc(place: Expression, kind: AssignmentKind, value: Expression) -> Statement {
+		return Statement{}
+	}
+	decl :: proc(name: Ident) -> Statement {
+		return Declaration{}
+	}
+	_if :: proc(condition: Expression, then: []Statement) -> Statement {
+		return IfStatement{condition, then, nil}
+	}
+	_if_else :: proc(condition: Expression, then: []Statement, _else: []Statement) -> Statement {
+		return IfStatement{condition, then, ElseBlock{_else}}
+	}
+	ident :: proc(name: string) -> Ident {
+		return Ident{name, 0}
+	}
+	id :: proc(name: string) -> Expression {
+		return expression(Ident{name, 0})
+	}
+	tuple :: proc(fields: []Expression, name: Maybe(string) = nil) -> Expression {
+		lit: LitStruct
+		lit.name_or_brace_token_idx = 0
+		if name, ok := name.(string); ok {
+			lit.name_or_brace_token_idx = new_clone(expression(Ident{name, 0}))
+		}
+		lit.fields = fields
+		return expression(lit)
+	}
+	record :: proc(fields: []NamedField, name: Maybe(string) = nil) -> Expression {
+		lit: LitStruct
+		lit.name_or_brace_token_idx = 0
+		if name, ok := name.(string); ok {
+			lit.name_or_brace_token_idx = new_clone(expression(Ident{name, 0}))
+		}
+		lit.fields = fields
+		return expression(lit)
+	}
+	fn_signature :: proc(arg_types: []Expression, return_type: Expression) -> Expression {
+		return expression(FunctionSignature{arg_types, new_clone(return_type)})
+	}
+	fn_def :: proc(
+		args: []FunctionArg,
+		return_ty: Maybe(Expression) = nil,
+		body: []Statement = nil,
+	) -> Expression {
+		ret: Maybe(^Expression)
+		if r, ok := return_ty.(Expression); ok {
+			ret = new_clone(r)
+		}
+		return expression(FunctionDefinition{args, ret, body, 0})
+	}
+	fn_call :: proc(fn: Expression, args: []Expression) -> Expression {
+		return expression(CallOp{new_clone(fn), args})
+	}
+	array :: proc(values: []Expression) -> Expression {
+		return expression(LitArray{values, 0})
+	}
+	_map :: proc(values: []MapEntry) -> Expression {
+		return expression(LitMap{values})
+	}
+}
+
+
+@(test)
+valid_expressions_test :: proc(t: ^testing.T) {
 	ok_expressions := []string{`4`, `4+6`, `"hello"`}
-	bad_expressions := []string{`.5`}
+	bad_expressions := []string{`:3`}
 	for ok in ok_expressions {
 		ex := expression_from_string(ok)
 		testing.expectf(
 			t,
 			expression_valid(ex),
-			"expression %s not valid",
+			"parser said expression %s is invalid",
+			expression_to_string(ex),
+		)
+	}
+	for bad in bad_expressions {
+		ex := expression_from_string(bad)
+		testing.expectf(
+			t,
+			!expression_valid(ex),
+			"parser said expression %s is valid but it isnt",
 			expression_to_string(ex),
 		)
 	}
@@ -40,8 +203,7 @@ tokenize_test :: proc(t: ^testing.T) {
 
 	for c in test_cases {
 		tokens, err := tokenize(c.source)
-		assert(err == nil)
-		test_expect_tokens(t, tokens[:], c.tokens)
+		test_expect_tokens_equal(t, tokens[:], c.tokens)
 	}
 }
 

@@ -3,35 +3,26 @@ package rite
 import "core:fmt"
 import "core:slice"
 
-TokenRange :: struct {
-	start_idx: int,
-	end_idx:   int,
-}
+
 Module :: struct {
 	statements: []Statement,
 }
 Expression :: struct {
-	type:  Type,
-	kind:  ExpressionKind,
-	range: TokenRange,
-}
-expression :: proc "contextless" (
+	type: Type,
 	kind: ExpressionKind,
-	start_token_idx: int,
-	end_token_idx: int,
-) -> Expression {
-	return Expression{nil, kind, TokenRange{start_token_idx, end_token_idx}}
+}
+expression :: #force_inline proc "contextless" (kind: ExpressionKind) -> Expression {
+	return Expression{nil, kind}
 }
 
 invalid_expression :: proc "contextless" (
-	start_token_idx: int,
-	end_token_idx: int,
-	msg := "",
+	p: ^Parser,
+	msg: string,
+	token_range: TokenRange,
 ) -> Expression {
 	return Expression {
 		nil,
-		InvalidExpression{msg = msg},
-		TokenRange{start_token_idx, end_token_idx},
+		InvalidExpression{msg, token_range, p.tokens[token_range.start_idx:token_range.end_idx]},
 	}
 }
 
@@ -57,15 +48,18 @@ ExpressionKind :: union #no_nil {
 	LitChar,
 	LitStruct, // this could be a struct definition or a value. e.g. { age: Int, name: String } vs. {age: }
 	LitArray,
+	LitMap,
 	FunctionSignature,
 	FunctionDefinition,
-	EnumDecl,
-	LitUnionDecl,
+	LitEnumType,
+	LitUnionType,
 	LitNone,
 }
 INVALID_EXPRESSION :: InvalidExpression{}
 InvalidExpression :: struct {
-	msg: string,
+	msg:          string,
+	tokens:       TokenRange,
+	tokens_slice: []Token,
 }
 expression_valid :: proc(ex: Expression) -> bool {
 	if _, invalid := ex.kind.(InvalidExpression); invalid {
@@ -80,15 +74,18 @@ FunctionSignature :: struct {
 	return_type: ^Expression,
 }
 
+// (i: int, j: string) -> Foo { print(i+j) return Foo{j,j} }
 FunctionDefinition :: struct {
-	args:        []FunctionArg,
-	return_type: Maybe(^Expression), // if nil, this means -> None
-	body:        []Statement,
+	args:                  []FunctionArg,
+	return_type:           Maybe(^Expression), // if nil, this means -> None
+	body:                  []Statement,
+	paren_token_start_idx: int,
 }
 
 FunctionArg :: struct {
 	name: Ident,
-	type: Expression,
+	ty:   Expression,
+	// default_value: Expression
 }
 
 LogicalAnd :: struct {
@@ -106,11 +103,7 @@ MathOp :: struct {
 	second: ^Expression,
 }
 math_op_expr :: proc(kind: MathOpKind, first: Expression, second: Expression) -> Expression {
-	return Expression {
-		type = nil,
-		kind = MathOp{kind, new_clone(first), new_clone(second)},
-		range = TokenRange{first.range.start_idx, second.range.end_idx},
-	}
+	return Expression{type = nil, kind = MathOp{kind, new_clone(first), new_clone(second)}}
 }
 MathOpKind :: enum {
 	Add,
@@ -144,16 +137,19 @@ Statement :: union #no_nil {
 	BreakStatement,
 	ReturnStatement,
 }
-BreakStatement :: struct {}
+BreakStatement :: struct {
+	break_token_idx: int,
+}
 ReturnStatement :: struct {
-	value: Maybe(Expression),
+	return_token_idx: int,
+	value:            Maybe(Expression),
 }
 IfStatement :: struct {
 	condition:  Expression,
 	body:       []Statement,
 	else_block: union {
 		// can be nil!
-		^ElseBlock,
+		ElseBlock,
 		^IfStatement,
 	},
 }
@@ -161,29 +157,33 @@ ElseBlock :: struct {
 	body: []Statement,
 }
 ForLoopKind :: union {
+	// nil means a forever loop
 	ConditionalLoop,
 	IteratorLoop,
 }
-ConditionalLoop :: distinct Expression
+ConditionalLoop :: struct {
+	condition: Expression,
+}
 IteratorLoop :: struct {
 	variable: Ident,
 	iterator: Expression,
 }
 ForStatement :: struct {
-	kind: ForLoopKind, // can be nil, then infinite loop
-	body: []Statement,
+	kind:          ForLoopKind, // can be nil, then infinite loop
+	body:          []Statement,
+	for_token_idx: int,
 }
 
 Assignment :: struct {
-	place: AssignmentPlace,
+	place: Expression,
 	kind:  AssignmentKind,
 	value: Expression,
 }
-AssignmentPlace :: union #no_nil {
-	Ident,
-	AccessOp,
-	IndexOp,
-}
+// AssignmentPlace :: union #no_nil {
+// 	Ident,
+// 	AccessOp,
+// 	IndexOp,
+// }
 AssignmentKind :: enum {
 	Assign,
 	AddAssign,
@@ -191,8 +191,12 @@ AssignmentKind :: enum {
 	MulAssign,
 	DivAssign,
 }
-NotExpression :: distinct ^Expression
-NegateExpression :: distinct ^Expression
+NotExpression :: struct {
+	inner: ^Expression,
+}
+NegateExpression :: struct {
+	inner: ^Expression,
+}
 // IdentPath :: distinct []Ident
 CallOp :: struct {
 	function: ^Expression,
@@ -207,46 +211,76 @@ AccessOp :: struct {
 	ident:  Ident,
 }
 Ident :: struct {
-	name: string,
+	name:      string,
+	token_idx: int,
 }
 LitBool :: struct {
-	value: bool,
+	value:     bool,
+	token_idx: int,
 }
 LitInt :: struct {
-	value: i64,
+	value:     i64,
+	token_idx: int,
 }
 LitFloat :: struct {
-	value: f64,
+	value:     f64,
+	token_idx: int,
 }
 LitString :: struct {
-	value: string,
+	value:     string,
+	token_idx: int,
 }
 LitChar :: struct {
-	value: rune,
+	value:     rune,
+	token_idx: int,
 }
-LitNone :: struct {}
+LitNone :: struct {
+	token_idx: int,
+}
 
+// valid struct literals:
+// Foo{ .. }          or   { .. }
+// Foo{ a: 3, .. }    or   { a: 3, .. }
+// Foo{ 3, 4, .. }    or   { 3, 4, .. }
+// Foo{ 3, 4 }        or   { 3, 4 }
+// Foo{ a: 3, b: 4 }  or   { a: 3, b: 4 }
+// { a: 3, b: 4 }
 LitStruct :: struct {
-	fields: []LitStructField,
-	name:   Maybe(^Expression), // e.g. Foo{1,2}
-	// todo: map literals in struct, e.g. {name: "Tadeo", 3: .Nice, 6: .Large}
-	// for a type that is {name: string, int: MyEnum}
+	fields:                  StructFields,
+	name_or_brace_token_idx: union #no_nil {
+		int,
+		^Expression,
+	},
+	// ellipsis + ellipsis value
+	// ellipsises: []Expression
+	// has_all_ellipsis: bool
 }
-LitStructField :: struct {
-	name:  Maybe(^Expression), // expression? or ident??? What about maps like { {2,3}: "Hello", {3,4}: "What"  }
-	value: ^Expression,
+StructFields :: union {
+	// nil: means no fields in this struct
+	[]NamedField,
+	[]Expression,
 }
-LitTuple :: struct {
-	values: []Expression,
+NamedField :: struct {
+	name:  Ident, // expression? or ident??? What about maps like [{2,3}: "Hello", {3,4}: "What"]
+	value: Expression,
 }
-EnumDecl :: struct {
-	variants: []Ident,
+LitEnumType :: struct {
+	variants:       []Ident,
+	enum_token_idx: int,
 }
-LitUnionDecl :: struct {
+LitUnionType :: struct {
 	variants: []Expression,
 }
 LitArray :: struct {
-	values: []Expression,
+	values:                  []Expression,
+	start_bracket_token_idx: int,
+}
+LitMap :: struct {
+	entries: []MapEntry,
+}
+MapEntry :: struct {
+	key:   Expression,
+	value: Expression,
 }
 
 Declaration :: struct {
@@ -264,13 +298,11 @@ DeclarationKind :: enum {
 	RuntimeExplicitDefault, // foo: int
 }
 
-
 TokenFlags :: bit_set[TokenFlag]
 TokenFlag :: enum {
 	CouldBeStatementStart,
 	CouldBeExpressionStart,
 	IsComparisonOperator,
-	CouldBeAfterStatements,
 }
 has_flag :: proc(ty: TokenType, flag: TokenFlag) -> bool {
 	return flag in TOKEN_TYPE_FLAGS[ty]
@@ -328,8 +360,224 @@ init_token_type_flags :: proc() -> (flags: [TokenType]TokenFlags) {
 		.IsComparisonOperator,
 		{.Greater, .GreaterEqual, .Less, .LessEqual, .Equal, .NotEqual},
 	)
-	set(&flags, .CouldBeAfterStatements, {.Eof, .RightBrace})
 	return flags
+}
+
+
+TokenRange :: struct {
+	start_idx: int,
+	end_idx:   int,
+}
+// we try to store a TokenRange only with atomic expressions, i.e. literals and idents.
+// the ranges for other expressions can be computed instead, 
+// supposed that the AST is made of the exact tokens that are expected to form e.g. an if statement
+// this should be the case, because otherwise the parse would not have succeeded anyway.
+expression_token_range :: proc(expr: Expression) -> TokenRange {
+	_from_to :: proc(first: ^Expression, second: ^Expression) -> TokenRange {
+		return TokenRange {
+			expression_token_range(first^).start_idx,
+			expression_token_range(second^).end_idx,
+		}
+	}
+
+	switch ex in expr.kind {
+	case InvalidExpression:
+		return ex.tokens
+	case LogicalOr:
+		return _from_to(ex.first, ex.second)
+	case LogicalAnd:
+		return _from_to(ex.first, ex.second)
+	case Comparison:
+		assert(len(ex.others) > 0)
+		return _from_to(ex.first, &ex.others[len(ex.others) - 1].expr)
+	case MathOp:
+		return _from_to(ex.first, ex.second)
+	case NegateExpression:
+		inner := expression_token_range(ex.inner^)
+		return {inner.start_idx - 1, inner.end_idx}
+	case NotExpression:
+		inner := expression_token_range(ex.inner^)
+		return {inner.start_idx - 1, inner.end_idx}
+	case CallOp:
+		fn_name := expression_token_range(ex.function^)
+		if len(ex.args) == 0 {
+			return TokenRange{fn_name.start_idx, fn_name.end_idx + 2} // e.g. bar.foo()
+		} else {
+			last_arg_end := expression_token_range(ex.args[len(ex.args) - 1]).end_idx
+			return TokenRange{fn_name.start_idx, last_arg_end + 1} // e.g. bar.foo()
+
+		}
+	case IndexOp:
+		range := _from_to(ex.place, ex.index)
+		return TokenRange{range.start_idx, range.end_idx + 1} // e.g my_arr[3+4]
+	case AccessOp:
+		parent := expression_token_range(ex.parent^)
+		return TokenRange{parent.start_idx, ex.ident.token_idx + 1}
+	case Ident:
+		return TokenRange{ex.token_idx, ex.token_idx + 1}
+	case LitBool:
+		return TokenRange{ex.token_idx, ex.token_idx + 1}
+	case LitInt:
+		return TokenRange{ex.token_idx, ex.token_idx + 1}
+	case LitFloat:
+		return TokenRange{ex.token_idx, ex.token_idx + 1}
+	case LitString:
+		return TokenRange{ex.token_idx, ex.token_idx + 1}
+	case LitChar:
+		return TokenRange{ex.token_idx, ex.token_idx + 1}
+	case LitNone:
+		return TokenRange{ex.token_idx, ex.token_idx + 1}
+	case LitStruct:
+		range: TokenRange
+		switch name_or_idx in ex.name_or_brace_token_idx {
+		case int:
+			range = TokenRange{name_or_idx, name_or_idx + 2} // in case no fields and ellipsis, skip over `{ }`
+		case ^Expression:
+			name_range := expression_token_range(name_or_idx^)
+			range = TokenRange{name_range.start_idx, name_range.end_idx + 2} // in case no fields and ellipsis, skip over `{ }`
+		}
+
+		switch fields in ex.fields {
+		case nil:
+		// already handled above, with +2 skipping over `{ }` tokens
+		case []NamedField:
+			assert(len(fields) > 0)
+			last_field_range := expression_token_range(fields[len(fields) - 1].value)
+			range.end_idx = last_field_range.end_idx + 1
+		case []Expression:
+			assert(len(fields) > 0)
+			last_field_range := expression_token_range(fields[len(fields) - 1])
+			range.end_idx = last_field_range.end_idx + 1
+		}
+		// todo: ellipsis support behind fields
+		return range
+	case LitArray:
+		range := TokenRange{ex.start_bracket_token_idx, 0}
+		if len(ex.values) > 0 {
+			range.end_idx = expression_token_range(ex.values[len(ex.values) - 1]).end_idx + 1
+		} else {
+			range.end_idx = range.start_idx + 2
+		}
+		return range
+	case LitMap:
+		assert(len(ex.entries) > 0)
+		first_key := expression_token_range(ex.entries[0].key)
+		last_val := expression_token_range(ex.entries[len(ex.entries) - 1].value)
+		return TokenRange{first_key.start_idx - 1, last_val.end_idx + 1} // including the `[` and `]` around the expressions inside
+	case FunctionSignature:
+		range := expression_token_range(ex.return_type^)
+		if len(ex.arg_types) > 0 {
+			range.start_idx =
+				expression_token_range(ex.arg_types[len(ex.arg_types) - 1]).start_idx - 1
+		} else {
+			range.start_idx -= 3 // skipping over `( ) ->` like in `() -> int` 
+		}
+		return range
+	case FunctionDefinition:
+		range: TokenRange = {ex.paren_token_start_idx, 0}
+		// figure out end_idx:
+		if len(ex.body) > 0 {
+			range.end_idx = statement_token_range(ex.body[len(ex.body) - 1]).end_idx + 1
+		} else if ret_ty, ok := ex.return_type.(^Expression); ok {
+			range.end_idx = expression_token_range(ret_ty^).end_idx + 2 // skip over {}, e.g. in `(i: int) -> None {}`
+		} else if len(ex.args) > 0 {
+			range.start_idx = expression_token_range(ex.args[len(ex.args) - 1].ty).end_idx + 3 // skip over `) {}` like in (foo: Foo) {}
+		} else {
+			range.end_idx = range.start_idx + 4 // i.e `() { }`, skip over the 4 tokens
+		}
+		return range
+	case LitEnumType:
+		range: TokenRange = {ex.enum_token_idx, 0}
+		if len(ex.variants) > 0 {
+			range.end_idx = ex.variants[len(ex.variants) - 1].token_idx + 2
+		} else {
+			range.end_idx = ex.enum_token_idx + 3 // i.e `enum {}`
+		}
+	case LitUnionType:
+		todo()
+	}
+	unreachable()
+}
+
+
+statement_token_range :: proc(stmt: Statement) -> TokenRange {
+	switch st in stmt {
+	case Assignment:
+		return TokenRange {
+			expression_token_range(st.place).start_idx,
+			expression_token_range(st.value).end_idx,
+		}
+	case Declaration:
+		range := TokenRange{st.ident.token_idx, 0}
+		if value, v_ok := st.value.(Expression); v_ok {
+			range.end_idx = expression_token_range(value).end_idx
+		} else if ty, ty_ok := st.ty.(Expression); ty_ok {
+			range.end_idx = expression_token_range(ty).end_idx
+		} else {
+			panic("a declaration should have the type and/or value specified.")
+		}
+		return range
+	case Expression:
+		return expression_token_range(st)
+	case IfStatement:
+		return if_statement_token_range(st)
+	case ForStatement:
+		range: TokenRange = {st.for_token_idx, 0}
+		if len(st.body) > 0 {
+			range.end_idx = statement_token_range(st.body[len(st.body) - 1]).end_idx + 1 // skip over `}`
+		} else {
+			switch kind in st.kind {
+			case nil:
+				range.end_idx = st.for_token_idx + 3 // skip over `for { }`
+			case ConditionalLoop:
+				range.end_idx = expression_token_range(kind.condition).end_idx + 2
+			case IteratorLoop:
+				range.end_idx = expression_token_range(kind.iterator).end_idx + 2
+			}
+		}
+		return range
+	case BreakStatement:
+		return TokenRange{st.break_token_idx, st.break_token_idx + 1}
+	case ReturnStatement:
+		range := TokenRange{st.return_token_idx, 0}
+		if value, ok := st.value.(Expression); ok {
+			range.end_idx = expression_token_range(value).end_idx
+		} else {
+			range.end_idx = range.start_idx + 1
+		}
+		return range
+	}
+	unreachable()
+}
+
+if_statement_token_range :: proc(st: IfStatement) -> TokenRange {
+	condition_range := expression_token_range(st.condition)
+	range := TokenRange{condition_range.start_idx - 1, 0}
+	switch el in st.else_block {
+	case ElseBlock:
+		if len(el.body) > 0 {
+			// eg. if a is int {} else { print("not int") }
+			range.end_idx = statement_token_range(el.body[len(el.body) - 1]).end_idx + 1 // skipping `}`
+		} else if len(st.body) > 0 {
+			// e.g. if a == 2 { print("Hello") } else {}
+			range.end_idx = statement_token_range(st.body[len(st.body) - 1]).end_idx + 4 // skipping `} else {}`
+		} else {
+			// e.g. if a == 2 {} else {}
+			range.end_idx = condition_range.end_idx + 5
+		}
+	case ^IfStatement:
+		range.end_idx = if_statement_token_range(el^).end_idx
+	case nil:
+		if len(st.body) > 0 {
+			// eg. if a is int { print("not int") }
+			range.end_idx = statement_token_range(st.body[len(st.body) - 1]).end_idx + 1 // skipping `}`
+		} else {
+			// e.g. `if a == 2 {}`
+			range.end_idx = condition_range.end_idx + 2
+		}
+	}
+	assert(range.end_idx != 0)
+	return range
 }
 
 
