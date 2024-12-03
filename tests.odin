@@ -9,31 +9,49 @@ main :: proc() {
 	// context.logger = log.create_console_logger()
 	// expr := expression_from_string("4 + 5 * {1,2,3} + 5")
 
+	SOURCE := `
+	Foo :: {int, Bar}
+	if true { print("Hello") } else {
+		(3 - 20) * (3 - 18)
+	}
+	
 
-	TEST1 :: `() {
-		print("Hello") * 99
-	}`
 
 
-	mod := module_from_string(
-		`
+	Bar :: {i : string, j : [int], tyty: make_ty() }
+	make_ty :: (i: int) -> Type {  }
+	main ::  () { foo()  bar() 
+	
 		Foo :: {int, Bar}
-		// if true { print("Hello") } else {
-		// 	(3 - 20) * (3 - 18)
-		// }
-		
-		// Bar :: {i : string, j : [int] }
-		// make_ty :: (i: int) -> Type {  }
-		// main ::  () { foo()  bar() }
-		
-		
-		`,
-	)
-	print(mod)
+	
+	}
+	
+	A :: 3 + C
+	B :: 302 + C
+	C :: 3232
+
+	// add :: (i: int, j: int) -> int {
+	// 	return i + j
+	// }
+	
+	// add :: (foo: Foo, j: int) -> make_ty(323) {
+	// 	return foo.x + j
+	// }
+
+	// add :: (bar: Bar) -> Bar {
+	// 	return bar
+	// }
+
+	`
+
+
+	print(SOURCE)
+	mod, tokens := module_from_string(SOURCE)
 	print(module_to_string(mod))
-
-
-	// type_check(&mod)
+	// print(tokens)
+	errors := errors_create(SOURCE, tokens)
+	type_check(&mod, &errors)
+	errors_print(errors)
 	// parse_expressions_test(nil)
 }
 
@@ -88,19 +106,19 @@ parse_expressions_test :: proc(t: ^testing.T) {
 	}
 
 	i :: proc(i: int) -> Expression {
-		return expression(LitInt{i64(i), 0})
+		return expression(PrimitiveLiteral{{.Int, {int = i64(i)}}, 0})
 	}
 	f :: proc(f: float) -> Expression {
-		return expression(LitFloat{f, 0})
+		return expression(PrimitiveLiteral{{.Float, {float = f}}, 0})
 	}
 	s :: proc(s: string) -> Expression {
-		return expression(LitString{s, 0})
+		return expression(PrimitiveLiteral{{.String, {string = s}}, 0})
 	}
 	b :: proc(b: bool) -> Expression {
-		return expression(LitBool{b, 0})
+		return expression(PrimitiveLiteral{{.Bool, {bool = b}}, 0})
 	}
 	ty :: proc(prim: PrimitiveType) -> Expression {
-		return expression(LitPrimitiveType{prim, 0})
+		return expression(PrimitiveTypeIdent{prim, 0})
 	}
 	add :: proc(a: Expression, b: Expression) -> Expression {
 		return expression(MathOp{.Add, new_clone(a), new_clone(b)})
@@ -133,7 +151,7 @@ parse_expressions_test :: proc(t: ^testing.T) {
 		return expression(Ident{name, 0})
 	}
 	tuple :: proc(fields: []Expression, name: Maybe(string) = nil) -> Expression {
-		lit: LitStruct
+		lit: StructLiteral
 		lit.name_or_brace_token_idx = 0
 		if name, ok := name.(string); ok {
 			lit.name_or_brace_token_idx = new_clone(expression(Ident{name, 0}))
@@ -142,7 +160,7 @@ parse_expressions_test :: proc(t: ^testing.T) {
 		return expression(lit)
 	}
 	record :: proc(fields: []NamedField, name: Maybe(string) = nil) -> Expression {
-		lit: LitStruct
+		lit: StructLiteral
 		lit.name_or_brace_token_idx = 0
 		if name, ok := name.(string); ok {
 			lit.name_or_brace_token_idx = new_clone(expression(Ident{name, 0}))
@@ -168,10 +186,10 @@ parse_expressions_test :: proc(t: ^testing.T) {
 		return expression(CallOp{new_clone(fn), args})
 	}
 	array :: proc(values: []Expression) -> Expression {
-		return expression(LitArray{values, 0})
+		return expression(ArrayLiteral{values, 0})
 	}
 	_map :: proc(values: []MapEntry) -> Expression {
-		return expression(LitMap{values})
+		return expression(MapLiteral{values})
 	}
 }
 

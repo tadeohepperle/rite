@@ -104,7 +104,6 @@ expect_statements :: proc(p: ^Parser) -> []Statement {
 	}
 	cur := current(p).ty
 	if cur != .RightBrace && cur != .Eof {
-		print(current(p))
 		invalid_range, _ := skip_until(p, .RightBrace)
 		append(&res, invalid_expression(p, "invalid tokens after statements", invalid_range))
 	}
@@ -448,7 +447,7 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 					if !signify_start_of_named_struct {
 						break
 					}
-					lit_struct: LitStruct
+					lit_struct: StructLiteral
 					fields_ok: bool
 					lit_struct.fields, fields_ok = expect_struct_literal_fields(p)
 					if fields_ok {
@@ -485,17 +484,22 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 		tok := next(p)
 		#partial switch tok.ty {
 		case .LitBool:
-			return expression(LitBool{tok.meta.bool, p.current - 1})
+			value := PrimitiveValue{.Bool, {bool = tok.meta.bool}}
+			return expression(PrimitiveLiteral{value, p.current - 1})
 		case .LitInt:
-			return expression(LitInt{tok.meta.int, p.current - 1})
+			value := PrimitiveValue{.Int, {int = tok.meta.int}}
+			return expression(PrimitiveLiteral{value, p.current - 1})
 		case .LitFloat:
-			return expression(LitFloat{tok.meta.float, p.current - 1})
+			value := PrimitiveValue{.Int, {float = tok.meta.float}}
+			return expression(PrimitiveLiteral{value, p.current - 1})
 		case .LitChar:
-			return expression(LitChar{tok.meta.char, p.current - 1})
+			value := PrimitiveValue{.Int, {char = tok.meta.char}}
+			return expression(PrimitiveLiteral{value, p.current - 1})
 		case .LitString:
-			return expression(LitString{tok.meta.string, p.current - 1})
+			value := PrimitiveValue{.Int, {string = tok.meta.string}}
+			return expression(PrimitiveLiteral{value, p.current - 1})
 		case .PrimitiveType:
-			return expression(LitPrimitiveType{tok.meta.primitive, p.current - 1})
+			return expression(PrimitiveTypeIdent{tok.meta.primitive, p.current - 1})
 		case .Ident:
 			return expression(Ident{tok.meta.string, p.current - 1})
 		case .Enum:
@@ -531,7 +535,7 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 				}
 			}
 			expect_token(p, .RightBrace)
-			return expression(LitEnumType{variants[:], enum_token_idx})
+			return expression(EnumDecl{variants[:], enum_token_idx})
 		case .LeftParen:
 			start := p.current - 1
 			this := current(p)
@@ -577,7 +581,6 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 						paren_token_start_idx = start,
 					}
 					fn_def.body = expect_statements(p)
-					print(fn_def.body)
 					if expect_token(p, .RightBrace) {
 						return expression(fn_def)
 					} else {
@@ -648,12 +651,12 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 					{start_bracket_token_idx, p.current + 1},
 				)
 			} else {
-				return expression(LitArray{values, start_bracket_token_idx})
+				return expression(ArrayLiteral{values, start_bracket_token_idx})
 			}
 
 		case .LeftBrace:
 			brace_idx := p.current - 1
-			lit_struct: LitStruct
+			lit_struct: StructLiteral
 			lit_struct.name_or_brace_token_idx = brace_idx
 
 			fields_ok: bool
@@ -792,7 +795,7 @@ parse :: proc(tokens: []Token) -> Module {
 		current = 0,
 	}
 	statements := expect_statements(&parser)
-	return Module{statements, nil}
+	return Module{statements = statements, tokens = tokens, scope = nil}
 }
 
 

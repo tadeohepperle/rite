@@ -18,15 +18,14 @@ Token :: struct {
 }
 
 TokenValue :: struct #raw_union {
-	int:        i64,
-	float:      f64,
-	string:     string,
-	bool:       bool,
-	char:       rune,
-	seperation: SeperationToPrevToken,
-	primitive:  PrimitiveType,
+	int:       i64,
+	float:     f64,
+	string:    string,
+	bool:      bool,
+	char:      rune,
+	primitive: PrimitiveType,
 }
-PrimitiveType :: enum {
+PrimitiveType :: enum u8 {
 	None,
 	Bool,
 	Int,
@@ -350,7 +349,6 @@ scan_token :: proc(s: ^Scanner) -> Token {
 			advance(s)
 		}
 		string_content := s.source[start_byte + 1:s.peek.byte]
-		print("string_content", string_content)
 		token := Token{.LitString, .None, {string = string_content}}
 		advance(s) // skip over last doublequote
 		return token

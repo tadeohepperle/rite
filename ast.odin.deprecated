@@ -671,7 +671,7 @@ expect_expression :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
 			// could also be type e.g. [int] or [{s: int, f: float}] or [enum{Red, Black}]
 			values := expect_expressions(p)
 			expect_token(p, .RightBracket)
-			return Expression{kind = LitArray{values}}, true
+			return Expression{kind = ArrayLiteral{values}}, true
 		case .LeftBrace:
 			struct_start := p.current - 1
 			struct_lit := expect_inside_of_struct_literal(p)
@@ -718,8 +718,8 @@ expect_function_definition_args :: proc(p: ^Parser) -> (args: []FunctionArg, err
 }
 
 // e.g. examples:
-expect_inside_of_struct_literal :: proc(p: ^Parser) -> (lit_struct: LitStruct) {
-	fields: [dynamic]LitStructField
+expect_inside_of_struct_literal :: proc(p: ^Parser) -> (lit_struct: StructLiteral) {
+	fields: [dynamic]StructLiteralField
 	for {
 		if current(p).ty == .RightBrace {
 			break
@@ -736,14 +736,14 @@ expect_inside_of_struct_literal :: proc(p: ^Parser) -> (lit_struct: LitStruct) {
 			}
 			append(
 				&fields,
-				LitStructField{name = new_clone(val_or_field_name), value = new_clone(value)},
+				StructLiteralField{name = new_clone(val_or_field_name), value = new_clone(value)},
 			)
 		} else {
 			// unnamed field
-			append(&fields, LitStructField{name = nil, value = new_clone(val_or_field_name)})
+			append(&fields, StructLiteralField{name = nil, value = new_clone(val_or_field_name)})
 		}
 	}
-	return LitStruct{fields[:], nil}
+	return StructLiteral{fields[:], nil}
 }
 
 Module :: struct {
@@ -788,8 +788,8 @@ ExpressionKind :: union #no_nil {
 	LitFloat,
 	LitString,
 	LitChar,
-	LitStruct, // this could be a struct definition or a value. e.g. { age: Int, name: String } vs. {age: }
-	LitArray,
+	StructLiteral, // this could be a struct definition or a value. e.g. { age: Int, name: String } vs. {age: }
+	ArrayLiteral,
 	FunctionSignature,
 	FunctionDefinition,
 	EnumDecl,
@@ -955,13 +955,13 @@ LitChar :: struct {
 }
 LitNone :: struct {}
 
-LitStruct :: struct {
-	fields: []LitStructField,
+StructLiteral :: struct {
+	fields: []StructLiteralField,
 	name:   Maybe(^Expression), // e.g. Foo{1,2}
 	// todo: map literals in struct, e.g. {name: "Tadeo", 3: .Nice, 6: .Large}
 	// for a type that is {name: string, int: MyEnum}
 }
-LitStructField :: struct {
+StructLiteralField :: struct {
 	name:  Maybe(^Expression), // expression? or ident??? What about maps like { {2,3}: "Hello", {3,4}: "What"  }
 	value: ^Expression,
 }
@@ -974,7 +974,7 @@ EnumDecl :: struct {
 LitUnionDecl :: struct {
 	variants: []Expression,
 }
-LitArray :: struct {
+ArrayLiteral :: struct {
 	values: []Expression,
 }
 

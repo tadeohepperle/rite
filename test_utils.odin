@@ -15,7 +15,6 @@ write :: proc(builder: ^strings.Builder, elements: ..string) {
 	}
 }
 module_to_string :: proc(mod: Module) -> string {
-
 	builder: strings.Builder
 	s := &builder
 	write(s, "Module(\n")
@@ -132,7 +131,29 @@ comparison_kind_to_string :: proc(cmp_kind: ComparisonKind) -> string {
 	}
 	unreachable()
 }
-
+primitive_value_to_string :: proc(prim: PrimitiveValue) -> string {
+	switch prim.type {
+	case .None:
+		return "None"
+	case .Bool:
+		if prim.data.bool {
+			return "true"
+		} else {
+			return "false"
+		}
+	case .Int:
+		return tprint(prim.data.int)
+	case .Float:
+		return tprint(prim.data.float)
+	case .String:
+		return prim.data.string
+	case .Char:
+		return tprint(prim.data.char)
+	case .Type:
+		panic("Primitive Literals should never have the .Type variant")
+	}
+	unreachable()
+}
 expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 	switch ex in expr.kind {
 	case InvalidExpression:
@@ -211,25 +232,9 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 	case AccessOp:
 		place := expression_to_string(ex.parent^)
 		return tprint(place, ".", ex.ident.name)
-	case LitBool:
-		if ex.value {
-			return "true"
-		} else {
-			return "false"
-		}
-	case LitInt:
-		return tprint(ex.value)
-	case LitFloat:
-		return tprint(ex.value)
-	case LitString:
-		builder := strings.builder_make(context.temp_allocator)
-		strings.write_quoted_string(&builder, ex.value)
-		return strings.to_string(builder)
-	case LitChar:
-		builder := strings.builder_make(context.temp_allocator)
-		strings.write_quoted_rune(&builder, ex.value)
-		return strings.to_string(builder)
-	case LitStruct:
+	case PrimitiveLiteral:
+		return primitive_value_to_string(ex.value)
+	case StructLiteral:
 		builder := strings.builder_make(context.temp_allocator)
 
 		b := &builder
@@ -257,7 +262,7 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 		}
 		write(b, "}" if ex.fields == nil else " }")
 		return strings.to_string(builder)
-	case LitArray:
+	case ArrayLiteral:
 		builder := strings.builder_make(context.temp_allocator)
 		b := &builder
 		write(b, "[")
@@ -269,7 +274,7 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 		}
 		write(b, "]")
 		return strings.to_string(builder)
-	case LitMap:
+	case MapLiteral:
 		builder := strings.builder_make(context.temp_allocator)
 		b := &builder
 		write(b, "[")
@@ -281,7 +286,7 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 		}
 		write(b, "]")
 		return strings.to_string(builder)
-	case LitEnumType:
+	case EnumDecl:
 		builder := strings.builder_make(context.temp_allocator)
 		b := &builder
 		write(b, "ENUM_DEF(")
@@ -293,9 +298,9 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 		}
 		write(b, ")")
 		return strings.to_string(builder)
-	case LitUnionType:
+	case UnionDecl:
 		todo()
-	case LitPrimitiveType:
+	case PrimitiveTypeIdent:
 		return primitive_type_to_string(ex.value)
 
 	}
@@ -550,10 +555,10 @@ expression_from_string :: proc(s: string) -> Expression {
 	return parse_expression(tokens[:])
 }
 
-module_from_string :: proc(s: string) -> Module {
+module_from_string :: proc(s: string) -> (Module, []Token) {
 	tokens, err := tokenize(s)
 	assert(err == nil)
-	return parse(tokens[:])
+	return parse(tokens[:]), tokens[:]
 }
 
 statement_slice_eq :: proc(a: []Statement, b: []Statement) -> bool {
@@ -690,6 +695,28 @@ maybe_expression_eq :: proc(a_ex: Maybe(Expression), b_ex: Maybe(Expression)) ->
 	}
 	return true
 }
+primitive_value_eq :: proc(a: PrimitiveValue, b: PrimitiveValue) -> bool {
+	if a.type != b.type {
+		return false
+	}
+	switch a.type {
+	case .None:
+		return true
+	case .Bool:
+		return a.data.bool == b.data.bool
+	case .Int:
+		return a.data.int == b.data.int
+	case .Float:
+		return a.data.float == b.data.float
+	case .String:
+		return a.data.string == b.data.string
+	case .Char:
+		return a.data.char == b.data.char
+	case .Type:
+		panic(".Type should not be in Primitive Value")
+	}
+	unreachable()
+}
 expression_eq :: proc(a_ex: Expression, b_ex: Expression) -> bool {
 	switch a in a_ex.kind {
 	case InvalidExpression:
@@ -729,23 +756,11 @@ expression_eq :: proc(a_ex: Expression, b_ex: Expression) -> bool {
 	case Ident:
 		b := b_ex.kind.(Ident) or_return
 		return a.name == b.name
-	case LitBool:
-		b := b_ex.kind.(LitBool) or_return
-		return a.value == b.value
-	case LitInt:
-		b := b_ex.kind.(LitInt) or_return
-		return a.value == b.value
-	case LitFloat:
-		b := b_ex.kind.(LitFloat) or_return
-		return a.value == b.value
-	case LitString:
-		b := b_ex.kind.(LitString) or_return
-		return a.value == b.value
-	case LitChar:
-		b := b_ex.kind.(LitChar) or_return
-		return a.value == b.value
-	case LitStruct:
-		b := b_ex.kind.(LitStruct) or_return
+	case PrimitiveLiteral:
+		b := b_ex.kind.(PrimitiveLiteral) or_return
+		return primitive_value_eq(a.value, b.value)
+	case StructLiteral:
+		b := b_ex.kind.(StructLiteral) or_return
 		switch a_fields in a.fields {
 		case nil:
 			if b.fields != nil {
@@ -762,11 +777,11 @@ expression_eq :: proc(a_ex: Expression, b_ex: Expression) -> bool {
 			b_name := b.name_or_brace_token_idx.(^Expression) or_return
 			expression_eq(a_name^, b_name^) or_return
 		}
-	case LitArray:
-		b := b_ex.kind.(LitArray) or_return
+	case ArrayLiteral:
+		b := b_ex.kind.(ArrayLiteral) or_return
 		expression_slice_eq(a.values, b.values) or_return
-	case LitMap:
-		b := b_ex.kind.(LitMap) or_return
+	case MapLiteral:
+		b := b_ex.kind.(MapLiteral) or_return
 		if len(a.entries) != len(b.entries) {
 			return false
 		}
@@ -784,8 +799,8 @@ expression_eq :: proc(a_ex: Expression, b_ex: Expression) -> bool {
 		function_arg_slice_eq(a.args, b.args) or_return
 		maybe_expression_ptr_eq(a.return_type, b.return_type) or_return
 		statement_slice_eq(a.body, b.body) or_return
-	case LitEnumType:
-		b := b_ex.kind.(LitEnumType) or_return
+	case EnumDecl:
+		b := b_ex.kind.(EnumDecl) or_return
 		if len(a.variants) != len(b.variants) {
 			return false
 		}
@@ -795,11 +810,11 @@ expression_eq :: proc(a_ex: Expression, b_ex: Expression) -> bool {
 				return false
 			}
 		}
-	case LitUnionType:
-		b := b_ex.kind.(LitUnionType) or_return
+	case UnionDecl:
+		b := b_ex.kind.(UnionDecl) or_return
 		todo()
-	case LitPrimitiveType:
-		b := b_ex.kind.(LitPrimitiveType) or_return
+	case PrimitiveTypeIdent:
+		b := b_ex.kind.(PrimitiveTypeIdent) or_return
 		return a.value == b.value
 	}
 

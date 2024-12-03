@@ -69,13 +69,9 @@ declaration_outer_dependencies :: proc(decl: Declaration) -> map[string]Empty {
 			deps[ex.ident.name] = Empty{}
 		case Ident:
 			deps[ex.name] = Empty{}
-		case LitBool:
-		case LitInt:
-		case LitFloat:
-		case LitString:
-		case LitChar:
-		case LitPrimitiveType:
-		case LitStruct:
+		case PrimitiveLiteral:
+		case PrimitiveTypeIdent:
+		case StructLiteral:
 			if name_expr, ok := ex.name_or_brace_token_idx.(^Expression); ok {
 				_collect_expr(deps, name_expr^)
 			}
@@ -89,11 +85,11 @@ declaration_outer_dependencies :: proc(decl: Declaration) -> map[string]Empty {
 					_collect_expr(deps, f.value)
 				}
 			}
-		case LitArray:
+		case ArrayLiteral:
 			for val in ex.values {
 				_collect_expr(deps, val)
 			}
-		case LitMap:
+		case MapLiteral:
 			for kv in ex.entries {
 				_collect_expr(deps, kv.key)
 				_collect_expr(deps, kv.value)
@@ -111,9 +107,9 @@ declaration_outer_dependencies :: proc(decl: Declaration) -> map[string]Empty {
 				_collect_expr(deps, arg.ty)
 			}
 		// no need to analyze body
-		case LitEnumType:
+		case EnumDecl:
 		// nothing to do
-		case LitUnionType:
+		case UnionDecl:
 			for var in ex.variants {
 				_collect_expr(deps, var)
 			}
@@ -122,7 +118,7 @@ declaration_outer_dependencies :: proc(decl: Declaration) -> map[string]Empty {
 	}
 }
 
-topo_sort_constants_by_outer_dependencies :: proc(
+toposort_constants_by_outer_dependencies :: proc(
 	constants: ^ScopeConstants,
 ) -> (
 	sorted: [dynamic]string,
@@ -160,15 +156,20 @@ topo_sort_constants_by_outer_dependencies :: proc(
 			for dep_name in const.outer_dependencies {
 				// add the dependency:
 				if dep_name not_in overload_groups {
-					overload_groups[name] = overload_group()
+					overload_groups[dep_name] = overload_group()
 				}
-				dep_group: ^OverloadGroup = &overload_groups[name]
+				dep_group: ^OverloadGroup = &overload_groups[dep_name]
 				if name not_in dep_group.dependents {
 					group.n_dependencies += 1
 					dep_group.dependents[name] = Empty{}
 				}
 			}
 		}
+	}
+
+	info("Overload groups:")
+	for name, group in overload_groups {
+		info("    ", name, group.n_dependencies, group.dependents)
 	}
 
 	// find start elements (with non-nil const) and without any dependency and add them to the sorted list:
@@ -217,9 +218,8 @@ collect_constants :: proc(statements: []Statement) -> (constants: ScopeConstants
 		decl := (&stmt.(Declaration)) or_continue
 		if decl.kind == .ConstExplicit || decl.kind == .ConstInferred {
 			const := ScopeConstant {
-				ty                 = nil,
 				decl               = decl,
-				value              = nil,
+				value              = {},
 				outer_dependencies = declaration_outer_dependencies(decl^),
 			}
 			name := decl.ident.name
@@ -233,11 +233,87 @@ collect_constants :: proc(statements: []Statement) -> (constants: ScopeConstants
 	return constants
 }
 
-type_check :: proc(mod: ^Module) -> Err {
-	types := new_clone(base_types())
-	scope := new_clone(Scope{})
+
+Errors :: struct {
+	source:     string,
+	all_tokens: []Token,
+	errors:     [dynamic]Error,
+}
+errors_print :: proc(this: Errors) {
+	if len(this.errors) == 0 {
+		print("No errors, all good.")
+		return
+	}
+	print("Found", len(this.errors), "Errors:")
+	for e, i in this.errors {
+		tokens := this.all_tokens[e.range.start_idx:e.range.end_idx]
+		print(i, ":   ", e.msg, "   ", tokens_as_code(tokens))
+	}
+}
+errors_create :: proc(source: string, all_tokens: []Token) -> Errors {
+	return Errors{source = source, all_tokens = all_tokens, errors = {}}
+}
+errors_add :: proc(this: ^Errors, msg: string, range: TokenRange) {
+	append(&this.errors, Error{msg, range, .Unknown})
+}
+Error :: struct {
+	msg:   string,
+	range: TokenRange,
+	kind:  ErrorKind,
+}
+// represents stage of the 
+ErrorKind :: enum {
+	Unknown,
+	Parsing,
+	TypeCheck,
+}
+
+
+TypeCheckCtx :: struct {
+	scope:  ^Scope,
+	types:  ^Types,
+	errors: ^Errors,
+}
+
+type_check :: proc(mod: ^Module, errors: ^Errors) {
+	using ctx := TypeCheckCtx {
+		types  = new_clone(base_types()),
+		scope  = new_clone(Scope{}),
+		errors = errors,
+	}
+	mod.scope = ctx.scope
+
+	// collect constants and sort them in the order in which they can be evaluated:
 	scope.constants = collect_constants(mod.statements)
-	sorted, cycled := topo_sort_constants_by_outer_dependencies(&scope.constants)
+	for name, consts in scope.constants {
+		for const in consts {
+			info(name, "  ", statement_tokens_as_string(const.decl^, errors.all_tokens))
+			for dep in const.outer_dependencies {
+				info("  -", dep)
+			}
+		}
+	}
+
+	sorted, cycled := toposort_constants_by_outer_dependencies(&scope.constants)
+	info("cycled", cycled)
+	info("sorted", sorted)
+
+	// if there are cyclic dependencies, add errors for all of them
+	for cycled_name in cycled {
+		for const in scope.constants[cycled_name] {
+			errors_add(errors, "cyclic dependencies involving", statement_token_range(const.decl^))
+		}
+	}
+
+	// assign types to all declarations and compute const values
+	for name in sorted {
+		for &const in scope.constants[name] {
+			add_types_to_const_declaration(&ctx, &const)
+		}
+	}
+
+	// add types to all constants:
+
 	/*
 
 	collect all the constant declarations in the module and sort them by the names used within their definitions
@@ -251,7 +327,79 @@ type_check :: proc(mod: ^Module) -> Err {
 
 
 	// constants: Constants = collect_const_declarations(mod.statements) or_return
-	return nil
+}
+
+
+// type_check_expression 
+
+add_types_to_const_declaration :: proc(using ctx: ^TypeCheckCtx, const: ^ScopeConstant) {
+	decl_kind := const.decl.kind
+	if decl_kind == .ConstExplicit {
+		ty_expr := &const.decl.ty.(Expression) or_else panic("ConstExplicit has ty expr")
+		add_type_to_expression(ctx, ty_expr, TYPE_TYPE)
+		ty_value := eval_const_expr(ctx, ty_expr^)
+		if ty_value.type == nil {
+			// unknown value, some error occurred
+			errors_add(
+				ctx.errors,
+				"type of constant could not be resolved",
+				expression_token_range(ty_expr^),
+			)
+		}
+
+		if ty_value.type.tag != .Type {
+			errors_add(
+				ctx.errors,
+				tprint("expression in TypeDecl place is not type, but ", ty_value),
+				expression_token_range(ty_expr^),
+			)
+			return
+		}
+
+
+		value_expr := &const.decl.value.(Expression) or_else panic("ConstExplicit has value expr")
+
+
+	} else if decl_kind == .ConstInferred {
+		value_expr := &const.decl.value.(Expression) or_else panic("ConstInferred has value expr")
+		add_type_to_expression(ctx, value_expr, nil)
+
+	} else {
+		panic("Not a const declaration")
+	}
+}
+
+// Note: for now we just execute simple expressions, functions are not supported, as they would require an entire runtime, stack + heap system
+// if successful, value.type should be expr.type
+eval_const_expr :: proc(ctx: ^TypeCheckCtx, expr: Expression) -> (value: AnyValue) {
+	assert(expr.type != nil)
+	switch ex in expr.kind {
+	case InvalidExpression:
+		return UNKNOWN_VALUE
+	case LogicalOr:
+	case LogicalAnd:
+	case Comparison:
+	case MathOp:
+	case NegateExpression:
+	case NotExpression:
+	case CallOp:
+	case IndexOp:
+	case AccessOp:
+	case Ident:
+	case PrimitiveTypeIdent:
+	case PrimitiveLiteral:
+	case StructLiteral:
+	case ArrayLiteral:
+	case MapLiteral:
+	case FunctionSignature:
+	case FunctionDefinition:
+	case EnumDecl:
+	case UnionDecl:
+
+	}
+
+	// assert(value.type == expr.type)
+	return UNKNOWN_VALUE
 }
 
 Scope :: struct {
@@ -265,18 +413,60 @@ ScopeVariable :: struct {
 	decl: ^Declaration,
 }
 ScopeConstant :: struct {
-	ty:                 Type,
 	decl:               ^Declaration,
-	value:              ConstantValue,
+	value:              AnyValue,
 	outer_dependencies: map[string]Empty, // idents found in the type def or value of the constant, NOT counting names that are referred to from the inside of a function in their own scope.
 }
-ConstantValue :: union {
-	// nil means not evaluated yet
-	int,
-	float,
-	string,
-	bool,
-	[]FunctionValue, // multiple, because we have function overloading
+AnyValue :: struct {
+	type: Type,
+	data: AnyData, // points at
+}
+AnyData :: struct #raw_union {
+	int:    int,
+	float:  float,
+	string: string,
+	bool:   bool,
+	char:   rune,
+	ptr:    rawptr, // for structs
+	type:   Type, // for values that are types
+	slice:  []Empty, // type punned
+	// todo: FnInstructions
+}
+any_value_to_string :: proc(val: AnyValue) -> string {
+	if val.type == nil {
+		return "UNKNOWN TYPE VALUE"
+	}
+	switch val.type.tag {
+	case .None:
+		return "None"
+	case .Int:
+		return tprint("Int(", val.data.int, ")")
+	case .Float:
+		return tprint("Float(", val.data.float, ")")
+	case .Bool:
+		return tprint("Bool(", val.data.bool, ")")
+	case .String:
+		return tprint("String(", val.data.string, ")")
+	case .Char:
+		return tprint("Char(", val.data.char, ")")
+	case .Struct:
+		return tprint("Some Struct Value") // todo
+	case .Union:
+		return tprint("Some Union Value") // todo
+	case .Enum:
+		return tprint("Some Enum Value") // todo
+	case .Type:
+		return tprint("Type(", val.data.type.structure, ")") // todo
+	case .Function:
+		return tprint("Some Function Value")
+	}
+	unreachable()
+}
+
+// can be produced as an error if e.g. a name could not be resolved
+UNKNOWN_VALUE := AnyValue {
+	type = nil,
+	data = {},
 }
 
 FunctionValue :: struct {
@@ -287,7 +477,7 @@ FunctionValue :: struct {
 ArgTypesHash :: distinct u64
 /// the TypeId is a hash that follows directly from the structure of a type (which may include a global name, distinguishing e.g. different zero sized types)
 TypeId :: distinct u64
-UNKNOWN_TYPE: TypeId : TypeId(max(u64))
+
 Type :: ^TypeInfo
 Types :: struct {
 	registered:      BucketArray(TypeInfo),
@@ -424,8 +614,13 @@ base_types :: proc() -> (types: Types) {
 	types.id_to_type_info[FLOAT_TYPE_ID] = FLOAT_TYPE
 	types.id_to_type_info[STRING_TYPE_ID] = STRING_TYPE
 	types.id_to_type_info[CHAR_TYPE_ID] = CHAR_TYPE
+	// types.id_to_type_info[UNKNOWN_TYPE_ID] = UNKNOWN_TYPE
 	return types
 }
+
+// UNKNOWN_TYPE_ID: TypeId : TypeId(max(u64))
+// UNKNOWN_TYPE_INFO := TypeInfo{}
+// UNKNOWN_TYPE := &UNKNOWN_TYPE_INFO
 
 NONE_TYPE_ID :: 0
 NONE_TYPE_INFO := TypeInfo {
@@ -511,75 +706,77 @@ TYPE_TYPE := &TYPE_TYPE_INFO
 // 	return constants, nil
 // }
 
-
-add_type_to_expression :: proc(types: ^Types, expr: ^Expression, expected_type: Maybe(Type)) {
+add_type_to_expression :: proc(
+	using ctx: ^TypeCheckCtx,
+	expr: ^Expression,
+	expected_type: Maybe(Type),
+) {
 	if expected, ok := expected_type.(Type); ok {
-		add_type_to_expression_expected(types, expr, expected)
+		add_type_to_expression_expected(ctx, expr, expected)
 	} else {
-		add_type_to_expression_unrestricted(types, expr)
+		add_type_to_expression_unrestricted(ctx, expr)
 	}
 }
 
-add_type_to_expression_unrestricted :: proc(types: ^Types, expr: ^Expression) {
+add_type_to_expression_unrestricted :: proc(using ctx: ^TypeCheckCtx, expr: ^Expression) {
 	switch &ex in expr.kind {
 	case InvalidExpression:
 		todo()
 	case LogicalOr:
-		add_type_to_expression_expected(types, ex.first, BOOL_TYPE)
-		add_type_to_expression_expected(types, ex.second, BOOL_TYPE)
+		add_type_to_expression_expected(ctx, ex.first, BOOL_TYPE)
+		add_type_to_expression_expected(ctx, ex.second, BOOL_TYPE)
 		expr.type = BOOL_TYPE
 	case LogicalAnd:
-		add_type_to_expression_expected(types, ex.first, BOOL_TYPE)
-		add_type_to_expression_expected(types, ex.second, BOOL_TYPE)
+		add_type_to_expression_expected(ctx, ex.first, BOOL_TYPE)
+		add_type_to_expression_expected(ctx, ex.second, BOOL_TYPE)
 		expr.type = BOOL_TYPE
 	case Comparison:
 		// for now it is probably fine to expect that the left and right side of the comparison are the same type
-		add_type_to_expression_unrestricted(types, ex.first)
+		add_type_to_expression_unrestricted(ctx, ex.first)
 		comparand_type := ex.first.type
 		assert(comparand_type != nil)
 		for &other in ex.others {
-			add_type_to_expression_expected(types, &other.expr, comparand_type)
+			add_type_to_expression_expected(ctx, &other.expr, comparand_type)
 		}
 		expr.type = BOOL_TYPE
 	case MathOp:
 		// look up add fn maybe???
 		todo()
 	case NegateExpression:
-		add_type_to_expression_unrestricted(types, ex.inner)
+		add_type_to_expression_unrestricted(ctx, ex.inner)
 	case NotExpression:
-		add_type_to_expression_expected(types, ex.inner, BOOL_TYPE)
+		add_type_to_expression_expected(ctx, ex.inner, BOOL_TYPE)
 		assert(expr.type == BOOL_TYPE)
 	case CallOp:
 	case IndexOp:
 	case AccessOp:
 	case Ident:
 	// lookup ident in scopes
-	case LitBool:
-		expr.type = BOOL_TYPE
-	case LitInt:
-		expr.type = INT_TYPE
-	case LitFloat:
-		expr.type = FLOAT_TYPE
-	case LitString:
-		expr.type = STRING_TYPE
-	case LitChar:
-		expr.type = CHAR_TYPE
-	case LitStruct:
+	case PrimitiveLiteral:
+	// switch ex.type{
+	// 	case .Type
+	// }
+	// expr.type = BOOL_TYPE
+	case StructLiteral:
 		todo()
-	case LitArray:
-	case LitMap:
+	case ArrayLiteral:
+	case MapLiteral:
 	case FunctionSignature:
 	case FunctionDefinition:
-	case LitEnumType:
-	case LitUnionType:
+	case EnumDecl:
+	case UnionDecl:
 		union_ty: Type
 		// todo
 		expr.type = TYPE_TYPE
-	case LitPrimitiveType:
+	case PrimitiveTypeIdent:
 		expr.type = TYPE_TYPE // ??? maybe TYPE_TYPE_TYPE if it is Type?? No!!!!
 	}
 }
 
-add_type_to_expression_expected :: proc(types: ^Types, expr: ^Expression, expected_type: Type) {
+add_type_to_expression_expected :: proc(
+	using ctx: ^TypeCheckCtx,
+	expr: ^Expression,
+	expected_type: Type,
+) {
 	todo()
 }

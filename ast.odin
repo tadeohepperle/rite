@@ -6,6 +6,7 @@ import "core:slice"
 
 Module :: struct {
 	statements: []Statement,
+	tokens:     []Token,
 	scope:      ^Scope,
 }
 Expression :: struct {
@@ -37,28 +38,22 @@ ExpressionKind :: union #no_nil {
 	LogicalOr,
 	LogicalAnd,
 	Comparison,
-	MathOp, // 583/3==4+32    a.foo[3] > - 4   a > b > c
-	// other high precedence operations
+	MathOp,
 	NegateExpression,
 	NotExpression,
 	CallOp,
 	IndexOp,
 	AccessOp,
-	// simple expressions:
 	Ident,
-	LitBool,
-	LitInt,
-	LitFloat,
-	LitString,
-	LitChar,
-	LitStruct, // this could be a struct definition or a value. e.g. { age: Int, name: String } vs. {age: }
-	LitArray,
-	LitMap,
+	PrimitiveTypeIdent,
+	PrimitiveLiteral,
+	StructLiteral,
+	ArrayLiteral,
+	MapLiteral,
 	FunctionSignature,
 	FunctionDefinition,
-	LitEnumType,
-	LitUnionType,
-	LitPrimitiveType,
+	EnumDecl,
+	UnionDecl,
 }
 INVALID_EXPRESSION :: InvalidExpression{}
 InvalidExpression :: struct {
@@ -220,30 +215,25 @@ Ident :: struct {
 	name:      string,
 	token_idx: int,
 }
-LitBool :: struct {
-	value:     bool,
+PrimitiveLiteral :: struct {
+	value:     PrimitiveValue,
 	token_idx: int,
 }
-LitInt :: struct {
-	value:     i64,
-	token_idx: int,
+PrimitiveValue :: struct {
+	type: PrimitiveType,
+	data: struct #raw_union {
+		int:    i64,
+		float:  f64,
+		string: string,
+		bool:   bool,
+		char:   rune,
+	},
 }
-LitFloat :: struct {
-	value:     f64,
-	token_idx: int,
-}
-LitString :: struct {
-	value:     string,
-	token_idx: int,
-}
-LitChar :: struct {
-	value:     rune,
-	token_idx: int,
-}
-LitPrimitiveType :: struct {
+PrimitiveTypeIdent :: struct {
 	value:     PrimitiveType,
 	token_idx: int,
 }
+
 
 // valid struct literals:
 // Foo{ .. }          or   { .. }
@@ -252,7 +242,7 @@ LitPrimitiveType :: struct {
 // Foo{ 3, 4 }        or   { 3, 4 }
 // Foo{ a: 3, b: 4 }  or   { a: 3, b: 4 }
 // { a: 3, b: 4 }
-LitStruct :: struct {
+StructLiteral :: struct {
 	fields:                  StructFields,
 	name_or_brace_token_idx: union #no_nil {
 		int,
@@ -271,18 +261,18 @@ NamedField :: struct {
 	name:  Ident, // expression? or ident??? What about maps like [{2,3}: "Hello", {3,4}: "What"]
 	value: Expression,
 }
-LitEnumType :: struct {
+EnumDecl :: struct {
 	variants:       []Ident,
 	enum_token_idx: int,
 }
-LitUnionType :: struct {
+UnionDecl :: struct {
 	variants: []Expression,
 }
-LitArray :: struct {
+ArrayLiteral :: struct {
 	values:                  []Expression,
 	start_bracket_token_idx: int,
 }
-LitMap :: struct {
+MapLiteral :: struct {
 	entries: []MapEntry,
 }
 MapEntry :: struct {
@@ -422,19 +412,11 @@ expression_token_range :: proc(expr: Expression) -> TokenRange {
 		return TokenRange{parent.start_idx, ex.ident.token_idx + 1}
 	case Ident:
 		return TokenRange{ex.token_idx, ex.token_idx + 1}
-	case LitBool:
+	case PrimitiveLiteral:
 		return TokenRange{ex.token_idx, ex.token_idx + 1}
-	case LitInt:
+	case PrimitiveTypeIdent:
 		return TokenRange{ex.token_idx, ex.token_idx + 1}
-	case LitFloat:
-		return TokenRange{ex.token_idx, ex.token_idx + 1}
-	case LitString:
-		return TokenRange{ex.token_idx, ex.token_idx + 1}
-	case LitChar:
-		return TokenRange{ex.token_idx, ex.token_idx + 1}
-	case LitPrimitiveType:
-		return TokenRange{ex.token_idx, ex.token_idx + 1}
-	case LitStruct:
+	case StructLiteral:
 		range: TokenRange
 		switch name_or_idx in ex.name_or_brace_token_idx {
 		case int:
@@ -458,7 +440,7 @@ expression_token_range :: proc(expr: Expression) -> TokenRange {
 		}
 		// todo: ellipsis support behind fields
 		return range
-	case LitArray:
+	case ArrayLiteral:
 		range := TokenRange{ex.start_bracket_token_idx, 0}
 		if len(ex.values) > 0 {
 			range.end_idx = expression_token_range(ex.values[len(ex.values) - 1]).end_idx + 1
@@ -466,7 +448,7 @@ expression_token_range :: proc(expr: Expression) -> TokenRange {
 			range.end_idx = range.start_idx + 2
 		}
 		return range
-	case LitMap:
+	case MapLiteral:
 		assert(len(ex.entries) > 0)
 		first_key := expression_token_range(ex.entries[0].key)
 		last_val := expression_token_range(ex.entries[len(ex.entries) - 1].value)
@@ -493,20 +475,27 @@ expression_token_range :: proc(expr: Expression) -> TokenRange {
 			range.end_idx = range.start_idx + 4 // i.e `() { }`, skip over the 4 tokens
 		}
 		return range
-	case LitEnumType:
+	case EnumDecl:
 		range: TokenRange = {ex.enum_token_idx, 0}
 		if len(ex.variants) > 0 {
 			range.end_idx = ex.variants[len(ex.variants) - 1].token_idx + 2
 		} else {
 			range.end_idx = ex.enum_token_idx + 3 // i.e `enum {}`
 		}
-	case LitUnionType:
+	case UnionDecl:
 		todo()
 	}
 	unreachable()
 }
 
 
+statement_tokens_as_string :: proc(stmt: Statement, all_tokens: []Token) -> string {
+	return tokens_as_code(statement_tokens(stmt, all_tokens))
+}
+statement_tokens :: proc(stmt: Statement, all_tokens: []Token) -> []Token {
+	range := statement_token_range(stmt)
+	return all_tokens[range.start_idx:range.end_idx]
+}
 statement_token_range :: proc(stmt: Statement) -> TokenRange {
 	switch st in stmt {
 	case Assignment:

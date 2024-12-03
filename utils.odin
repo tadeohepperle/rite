@@ -3,9 +3,11 @@ package rite
 import "core:container/queue"
 import "core:fmt"
 import "core:hash"
+import "core:log"
 import "core:slice"
 
 print :: fmt.println
+info :: log.info
 todo :: proc(loc := #caller_location) -> ! {
 	panic("todo at ", loc)
 }
