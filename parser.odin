@@ -7,6 +7,7 @@ Parser :: struct {
 	current: int,
 }
 
+
 // todo: add #no_bounds_check
 current :: proc(p: ^Parser) -> Token {
 	if len(p.tokens) > p.current {
@@ -69,7 +70,7 @@ accept_ident :: proc(p: ^Parser) -> (Ident, bool) {
 
 accept_left_paren_connected_to_last_token :: proc(p: ^Parser) -> bool {
 	cur := current(p)
-	accepted := cur.ty == .LeftParen && bool(cur.meta.connected_to_last_token)
+	accepted := cur.ty == .LeftParen && cur.seperation == .None
 	if accepted {
 		log.info("Accepted left paren connected to last token")
 		p.current += 1
@@ -78,7 +79,7 @@ accept_left_paren_connected_to_last_token :: proc(p: ^Parser) -> bool {
 }
 accept_left_bracket_connected_to_last_token :: proc(p: ^Parser) -> bool {
 	cur := current(p)
-	accepted := cur.ty == .LeftBracket && bool(cur.meta.connected_to_last_token)
+	accepted := cur.ty == .LeftBracket && cur.seperation == .None
 	if accepted {
 		log.info("Accepted left bracket connected to last token")
 		p.current += 1
@@ -87,7 +88,7 @@ accept_left_bracket_connected_to_last_token :: proc(p: ^Parser) -> bool {
 }
 accept_left_brace_connected_to_last_token :: proc(p: ^Parser) -> bool {
 	cur := current(p)
-	accepted := cur.ty == .LeftBrace && bool(cur.meta.connected_to_last_token)
+	accepted := cur.ty == .LeftBrace && cur.seperation == .None
 	if accepted {
 		log.info("Accepted left brace connected to last token")
 		p.current += 1
@@ -103,13 +104,12 @@ expect_statements :: proc(p: ^Parser) -> []Statement {
 	}
 	cur := current(p).ty
 	if cur != .RightBrace && cur != .Eof {
+		print(current(p))
 		invalid_range, _ := skip_until(p, .RightBrace)
 		append(&res, invalid_expression(p, "invalid tokens after statements", invalid_range))
 	}
-
 	return res[:]
 }
-
 
 expect_statement :: proc(p: ^Parser) -> Statement {
 	current_ty := current(p).ty
@@ -128,13 +128,83 @@ expect_statement :: proc(p: ^Parser) -> Statement {
 		// for_loop := expect_for_loop(p) 
 		// return Statement(for_loop), nil
 	} else if current_ty == .If {
-		todo() // XXX
-		// if_block := expect_if_block(p) 
-		// return Statement(if_block), nil
+
+		switch if_or_invalid in expect_if_statement(p) {
+		case IfStatement:
+			return Statement(if_or_invalid)
+		case InvalidExpression:
+			return Statement(expression(if_or_invalid))
+		}
 	} else if current_ty == .Switch {
 		todo()
 	} else {
 		return expect_assignment_declaration_or_expression(p)
+	}
+	unreachable()
+}
+
+// only call if you already know the current token is .If
+
+IfStatementOrErr :: union #no_nil {
+	IfStatement,
+	InvalidExpression,
+}
+expect_if_statement :: proc(p: ^Parser) -> (statement: IfStatementOrErr) {
+	start := p.current
+	assert(expect_token(p, .If))
+	if_stmt: IfStatement
+	if_stmt.condition = expect_expression(p)
+	if !expect_token(p, .LeftBrace) {
+		err_range := TokenRange{start, p.current}
+		return _invalid_expression(p, "expected `{` after condition of If-Statement", err_range)
+	}
+	if_stmt.body = expect_statements(p)
+
+	if invalid_ex, is_invalid := _eat_right_brace(p, start).(InvalidExpression); is_invalid {
+		return invalid_ex
+	}
+	if !expect_token(p, .Else) {
+		return if_stmt
+	}
+
+	cur := current(p).ty
+	if cur == .If {
+		// else if block:
+		switch else_if in expect_if_statement(p) {
+		case IfStatement:
+			if_stmt.else_block = new_clone(else_if)
+			return if_stmt
+		case InvalidExpression:
+			return _invalid_expression(p, else_if.msg, TokenRange{start, else_if.tokens.end_idx})
+		}
+	} else if cur == .LeftBrace {
+		skip(p) // skip over `{`
+		// else block
+		else_block: ElseBlock
+		else_block.body = expect_statements(p)
+		if invalid_ex, is_invalid := _eat_right_brace(p, start).(InvalidExpression); is_invalid {
+			return invalid_ex
+		} else {
+			if_stmt.else_block = else_block
+			return if_stmt
+		}
+	} else {
+		// no `{` after else, error:
+		return _invalid_expression(p, "expected `{` after `else`", TokenRange{start, p.current})
+	}
+	unreachable()
+
+	_eat_right_brace :: proc(p: ^Parser, start: int) -> Maybe(InvalidExpression) {
+		if expect_token(p, .RightBrace) {
+			return nil
+		}
+		range, found_brace := skip_until(p, .RightBrace)
+		if found_brace {
+			skip(p)
+			range.end_idx += 1
+		}
+		range.start_idx = start
+		return _invalid_expression(p, "expected `}` after statements", range)
 	}
 }
 
@@ -424,8 +494,8 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 			return expression(LitChar{tok.meta.char, p.current - 1})
 		case .LitString:
 			return expression(LitString{tok.meta.string, p.current - 1})
-		case .LitNone:
-			return expression(LitNone{p.current - 1})
+		case .PrimitiveType:
+			return expression(LitPrimitiveType{tok.meta.primitive, p.current - 1})
 		case .Ident:
 			return expression(Ident{tok.meta.string, p.current - 1})
 		case .Enum:
@@ -722,7 +792,7 @@ parse :: proc(tokens: []Token) -> Module {
 		current = 0,
 	}
 	statements := expect_statements(&parser)
-	return Module{statements}
+	return Module{statements, nil}
 }
 
 

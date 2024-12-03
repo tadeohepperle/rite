@@ -13,7 +13,7 @@ tprint :: proc(args: ..any) -> string {
 	return fmt.aprint(..args, allocator = context.temp_allocator, sep = "")
 }
 Err :: Maybe(string)
-
+Empty :: struct {}
 
 BUCKET_SIZE :: 32
 BucketArray :: struct($T: typeid) {
@@ -73,19 +73,30 @@ hasher_init :: proc() -> Hasher {
 hasher_add :: proc {
 	hasher_add_bytes,
 	hasher_add_string,
-	hasher_add_fixed_size,
+	hasher_add_sized,
 }
 hasher_add_bytes :: proc "contextless" (hasher: ^Hasher, bytes: []u8) {
-	hasher.hash = hash.fnv64_no_a(bytes, seed = hasher.hash)
+	hasher.hash = hash.fnv64a(bytes, seed = hasher.hash)
 }
 hasher_add_string :: proc "contextless" (hasher: ^Hasher, s: string) {
 	hasher_add_bytes(hasher, transmute([]u8)s)
 }
-hasher_add_fixed_size :: proc "contextless" (hasher: ^Hasher, val: $T) where T != string {
+hasher_add_sized :: proc "contextless" (hasher: ^Hasher, val: $T) where T != string {
 	val := val
 	bytes := slice.bytes_from_ptr(&val, size_of(T))
 	hasher_add_bytes(hasher, bytes)
 }
 hasher_finish :: proc "contextless" (hasher: Hasher) -> u64 {
 	return hasher.hash
+}
+
+
+tmp_arr :: proc($T: typeid, cap: int = 0) -> [dynamic]T {
+	return make([dynamic]T, 0, cap, allocator = context.temp_allocator)
+}
+tmp_slice :: proc($T: typeid, len: int = 0) -> []T {
+	return make([]T, len, allocator = context.temp_allocator)
+}
+tmp_map :: proc($K: typeid, $V: typeid) -> map[K]V {
+	return make(map[K]V, allocator = context.temp_allocator)
 }

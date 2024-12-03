@@ -6,6 +6,7 @@ import "core:slice"
 
 Module :: struct {
 	statements: []Statement,
+	scope:      ^Scope,
 }
 Expression :: struct {
 	type: Type,
@@ -20,10 +21,14 @@ invalid_expression :: proc "contextless" (
 	msg: string,
 	token_range: TokenRange,
 ) -> Expression {
-	return Expression {
-		nil,
-		InvalidExpression{msg, token_range, p.tokens[token_range.start_idx:token_range.end_idx]},
-	}
+	return Expression{nil, _invalid_expression(p, msg, token_range)}
+}
+_invalid_expression :: proc "contextless" (
+	p: ^Parser,
+	msg: string,
+	token_range: TokenRange,
+) -> InvalidExpression {
+	return InvalidExpression{msg, token_range, p.tokens[token_range.start_idx:token_range.end_idx]}
 }
 
 // todo: should be struct for tracking type in type inference!
@@ -53,7 +58,7 @@ ExpressionKind :: union #no_nil {
 	FunctionDefinition,
 	LitEnumType,
 	LitUnionType,
-	LitNone,
+	LitPrimitiveType,
 }
 INVALID_EXPRESSION :: InvalidExpression{}
 InvalidExpression :: struct {
@@ -80,6 +85,7 @@ FunctionDefinition :: struct {
 	return_type:           Maybe(^Expression), // if nil, this means -> None
 	body:                  []Statement,
 	paren_token_start_idx: int,
+	scope:                 ^Scope,
 }
 
 FunctionArg :: struct {
@@ -234,7 +240,8 @@ LitChar :: struct {
 	value:     rune,
 	token_idx: int,
 }
-LitNone :: struct {
+LitPrimitiveType :: struct {
+	value:     PrimitiveType,
 	token_idx: int,
 }
 
@@ -328,7 +335,7 @@ init_token_type_flags :: proc() -> (flags: [TokenType]TokenFlags) {
 			.LitFloat,
 			.LitString,
 			.LitChar,
-			.LitNone,
+			.PrimitiveType,
 			.LeftParen,
 			.LeftBracket,
 			.LeftBrace,
@@ -346,7 +353,7 @@ init_token_type_flags :: proc() -> (flags: [TokenType]TokenFlags) {
 			.LitFloat,
 			.LitString,
 			.LitChar,
-			.LitNone,
+			.PrimitiveType,
 			.LeftParen,
 			.LeftBracket,
 			.LeftBrace,
@@ -425,7 +432,7 @@ expression_token_range :: proc(expr: Expression) -> TokenRange {
 		return TokenRange{ex.token_idx, ex.token_idx + 1}
 	case LitChar:
 		return TokenRange{ex.token_idx, ex.token_idx + 1}
-	case LitNone:
+	case LitPrimitiveType:
 		return TokenRange{ex.token_idx, ex.token_idx + 1}
 	case LitStruct:
 		range: TokenRange

@@ -16,14 +16,24 @@ main :: proc() {
 
 
 	mod := module_from_string(
-		`main ::  () {
-			print("Hello") * 99
-			a := 3.33
-			b : int = {"no", 3.2}.inverted(3)
-			a := b := c
-		}`,
+		`
+		Foo :: {int, Bar}
+		// if true { print("Hello") } else {
+		// 	(3 - 20) * (3 - 18)
+		// }
+		
+		// Bar :: {i : string, j : [int] }
+		// make_ty :: (i: int) -> Type {  }
+		// main ::  () { foo()  bar() }
+		
+		
+		`,
 	)
+	print(mod)
 	print(module_to_string(mod))
+
+
+	// type_check(&mod)
 	// parse_expressions_test(nil)
 }
 
@@ -38,7 +48,7 @@ parse_expressions_test :: proc(t: ^testing.T) {
 		Case{"7 + 3 * 2", add(i(7), mul(i(3), i(2)))},
 		Case {
 			"(i: int, j: float) -> None {}",
-			fn_def({{ident("i"), id("int")}, {ident("j"), id("float")}}, return_ty = none()),
+			fn_def({{ident("i"), id("int")}, {ident("j"), id("float")}}, return_ty = ty(.None)),
 		},
 		Case{"(i: int, j: float){}", fn_def({{ident("i"), id("int")}, {ident("j"), id("float")}})},
 		Case {
@@ -89,8 +99,8 @@ parse_expressions_test :: proc(t: ^testing.T) {
 	b :: proc(b: bool) -> Expression {
 		return expression(LitBool{b, 0})
 	}
-	none :: proc() -> Expression {
-		return expression(LitNone{0})
+	ty :: proc(prim: PrimitiveType) -> Expression {
+		return expression(LitPrimitiveType{prim, 0})
 	}
 	add :: proc(a: Expression, b: Expression) -> Expression {
 		return expression(MathOp{.Add, new_clone(a), new_clone(b)})
@@ -152,7 +162,7 @@ parse_expressions_test :: proc(t: ^testing.T) {
 		if r, ok := return_ty.(Expression); ok {
 			ret = new_clone(r)
 		}
-		return expression(FunctionDefinition{args, ret, body, 0})
+		return expression(FunctionDefinition{args, ret, body, 0, nil})
 	}
 	fn_call :: proc(fn: Expression, args: []Expression) -> Expression {
 		return expression(CallOp{new_clone(fn), args})

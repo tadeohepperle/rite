@@ -9,7 +9,6 @@ import "core:testing"
 // SECTION: Displaying the AST
 // /////////////////////////////////////////////////////////////////////////////
 
-
 write :: proc(builder: ^strings.Builder, elements: ..string) {
 	for s in elements {
 		strings.write_string(builder, s)
@@ -141,6 +140,7 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 			"InvalidExpression(",
 			ex.msg,
 			", got `",
+			ex.tokens,
 			tokens_as_code(ex.tokens_slice),
 			"`)",
 		)
@@ -191,8 +191,14 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 		builder := strings.builder_make(context.temp_allocator)
 		b := &builder
 		write(b, "CALL(", function)
+		if len(ex.args) > 0 {
+			write(b, " WITH ARGS ")
+		}
 		for arg, i in ex.args {
-			write(&builder, ", ", expression_to_string(arg))
+			if i != 0 {
+				write(b, ", ")
+			}
+			write(b, expression_to_string(arg))
 		}
 		write(b, ")")
 		return strings.to_string(builder)
@@ -289,11 +295,14 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 		return strings.to_string(builder)
 	case LitUnionType:
 		todo()
-	case LitNone:
-		return "None"
+	case LitPrimitiveType:
+		return primitive_type_to_string(ex.value)
+
 	}
 	return tprint("UnhandledExpression ", expr)
 }
+
+
 function_definition_to_string :: proc(fun_def: FunctionDefinition, indent: string) -> string {
 	builder: strings.Builder
 	b := &builder
@@ -392,7 +401,7 @@ random_token :: proc() -> (tok: Token) {
 		.LitFloat, // e.g. 3.40
 		.LitString, // "Hello"
 		.LitChar, // 'Hello'
-		.LitNone, //
+		.PrimitiveType,
 	}
 	OTHER_TOKENS := [?]TokenType {
 		.LeftBrace,
@@ -475,8 +484,8 @@ random_token :: proc() -> (tok: Token) {
 			// 'Hello'
 			chars := [?]rune{'j', 'k', 'p', 'g', 'h', 'q', 'l'}
 			tok.meta.char = rand.choice(chars[:])
-		case .LitNone: //
-
+		case .PrimitiveType:
+			tok.meta.primitive = rand.choice_enum(PrimitiveType)
 		}
 	} else {
 		tok.ty = rand.choice(OTHER_TOKENS[:])
@@ -789,9 +798,11 @@ expression_eq :: proc(a_ex: Expression, b_ex: Expression) -> bool {
 	case LitUnionType:
 		b := b_ex.kind.(LitUnionType) or_return
 		todo()
-	case LitNone:
-		b := b_ex.kind.(LitNone) or_return
+	case LitPrimitiveType:
+		b := b_ex.kind.(LitPrimitiveType) or_return
+		return a.value == b.value
 	}
+
 	return true
 }
 

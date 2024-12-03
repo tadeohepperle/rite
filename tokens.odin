@@ -12,29 +12,62 @@ Tokens :: struct {
 }
 
 Token :: struct {
-	ty:   TokenType,
-	meta: TokenMetadata,
+	ty:         TokenType,
+	seperation: SeperationToPrevToken,
+	meta:       TokenValue,
 }
 
-TokenMetadata :: struct #raw_union {
-	int:                     i64,
-	float:                   f64,
-	string:                  string,
-	bool:                    bool,
-	char:                    rune,
-	connected_to_last_token: ConnectedToLastToken, // is true for left parens and bracket if next to last token without whitespace in between: one expression: calc(3+3), these are two expressions: calc (3+3)
+TokenValue :: struct #raw_union {
+	int:        i64,
+	float:      f64,
+	string:     string,
+	bool:       bool,
+	char:       rune,
+	seperation: SeperationToPrevToken,
+	primitive:  PrimitiveType,
+}
+PrimitiveType :: enum {
+	None,
+	Bool,
+	Int,
+	Float,
+	String,
+	Char,
+	Type,
+}
+primitive_type_to_string :: proc(prim: PrimitiveType) -> string {
+	switch prim {
+	case .None:
+		return "None"
+	case .Bool:
+		return "bool"
+	case .Int:
+		return "int"
+	case .Float:
+		return "float"
+	case .String:
+		return "string"
+	case .Char:
+		return "char"
+	case .Type:
+		return "Type"
+	}
+	unreachable()
 }
 
-// true if no whitespace between this and the last token
-// only used for '(' and '[' characters to decide if they should bind to the character before (fn call, indexing)
-// or if they start a new expression (parents around calculation, list expression).
-// This is necessary because the language does not have commas, semicolons or line breaks as seperators!
-ConnectedToLastToken :: distinct bool
-
+// in general, this language does not care about whitespace and commas, 
+// but they can give hints to the parser in ambigous situations.
+// 1. WhiteSpace:
+// whitespace is only required to be omitted for function call, struct literal and indexing 
+// 2. Commas: commas force terminate any individual expression, e.g. `i > 3, .Foo` vs. `i > 3.Foo`
+SeperationToPrevToken :: enum u8 {
+	None       = 0,
+	WhiteSpace = 1, // is true for left parens and bracket if next to last token without whitespace in between: one expression: calc(3+3), these are two expressions: calc (3+3)
+	Comma      = 2,
+}
 
 TokenType :: enum u8 {
 	Error,
-	StatementSeperator,
 	Eof,
 	LeftBrace,
 	RightBrace,
@@ -82,22 +115,22 @@ TokenType :: enum u8 {
 
 	// multi character dynamic tokens:
 	Ident, // e.g. hello
+	PrimitiveType, // a few idents that are already builtin, e.g. int, float, string, Type
 	LitBool, // true or false
 	LitInt, // e.g. 383
 	LitFloat, // e.g. 3.40
 	LitString, // "Hello"
 	LitChar, // 'Hello'
-	LitNone, //
 }
 
 
 Scanner :: struct {
-	source:                       string,
-	current:                      Char,
-	peek:                         Char,
-	line:                         int,
-	col:                          int,
-	white_space_since_last_token: bool,
+	source:     string,
+	current:    Char,
+	peek:       Char,
+	line:       int,
+	col:        int,
+	seperation: SeperationToPrevToken,
 }
 
 Char :: struct {
@@ -110,7 +143,7 @@ CharType :: enum u8 {
 	Letter, // default
 	Numeric,
 	WhiteSpace,
-	WhiteSpaceLineBreak,
+	Comma,
 	LeftBrace,
 	RightBrace,
 	LeftBracket,
@@ -148,8 +181,8 @@ init_char_types :: proc() {
 		}
 	}
 	set("0123456789", .Numeric)
-	set(",; \t\v", .WhiteSpace)
-	set("\n\r", .WhiteSpaceLineBreak)
+	set(" \t\v\n\r", .WhiteSpace)
+	set(",;", .Comma)
 	set("{", .LeftBrace)
 	set("}", .RightBrace)
 	set("[", .LeftBracket)
@@ -226,7 +259,7 @@ scan_number :: proc(s: ^Scanner) -> Token {
 	}
 	return token
 }
-
+// Note: later this should be a prefix tree or something. But for now the switch statement is nice and flexible
 ident_or_keyword_token :: proc(name: string) -> Token {
 	switch name {
 	case "if":
@@ -254,35 +287,44 @@ ident_or_keyword_token :: proc(name: string) -> Token {
 	case "case":
 		return token(.Case)
 	case "true":
-		return Token{.LitBool, {bool = true}}
+		return lit_bool(true)
 	case "false":
-		return Token{.LitBool, {bool = false}}
+		return lit_bool(false)
 	case "None":
-		return Token{.LitNone, {}}
+		return lit_primitive_type(.None)
+	case "Type":
+		return lit_primitive_type(.Type)
+	case "string":
+		return lit_primitive_type(.String)
+	case "int":
+		return lit_primitive_type(.Int)
+	case "float":
+		return lit_primitive_type(.Float)
+	case "char":
+		return lit_primitive_type(.Char)
+	case "bool":
+		return lit_primitive_type(.Bool)
 	case "switch":
 		return token(.Switch)
-
 	case:
-		return Token{.Ident, {string = name}}
+		return Token{.Ident, .None, {string = name}}
 	}
 }
 
 scan_token :: proc(s: ^Scanner) -> Token {
 	#partial switch s.current.ty {
-	case .WhiteSpace, .WhiteSpaceLineBreak:
-		s.white_space_since_last_token = true
-		advance(s)
-		// zoom over all whitespace but dont emit a token for it.
-		had_line_break_already := false
+	case .WhiteSpace, .Comma:
+		if s.current.ty == .Comma {
+			s.seperation = .Comma
+		} else {
+			s.seperation = .WhiteSpace
+		}
 		for {
 			if s.current.ty == .WhiteSpace {
 				advance(s)
-			} else if s.current.ty == .WhiteSpaceLineBreak {
+			} else if s.current.ty == .Comma {
 				advance(s)
-				if had_line_break_already { 	// two line breaks cause a break between statements 
-					return token(.StatementSeperator)
-				}
-				had_line_break_already = true
+				s.seperation = .Comma
 			} else {
 				break
 			}
@@ -309,7 +351,7 @@ scan_token :: proc(s: ^Scanner) -> Token {
 		}
 		string_content := s.source[start_byte + 1:s.peek.byte]
 		print("string_content", string_content)
-		token := Token{.LitString, {string = string_content}}
+		token := Token{.LitString, .None, {string = string_content}}
 		advance(s) // skip over last doublequote
 		return token
 	case .SingleQuote:
@@ -320,7 +362,7 @@ scan_token :: proc(s: ^Scanner) -> Token {
 		token_char := s.peek.ch
 		advance(s) // skip over char
 		advance(s) // skip over ending single quote
-		return Token{.LitChar, {char = token_char}}
+		return Token{.LitChar, .None, {char = token_char}}
 	case .Numeric:
 		return scan_number(s)
 	case .Colon:
@@ -432,15 +474,15 @@ scan_token :: proc(s: ^Scanner) -> Token {
 			return token(.Not)
 		}
 	case .LeftBrace:
-		return Token{.LeftBrace, {connected_to_last_token = !s.white_space_since_last_token}}
+		return token(.LeftBrace)
 	case .RightBrace:
 		return token(.RightBrace)
 	case .LeftBracket:
-		return Token{.LeftBracket, {connected_to_last_token = !s.white_space_since_last_token}}
+		return token(.LeftBracket)
 	case .RightBracket:
 		return token(.RightBracket)
 	case .LeftParen:
-		return Token{.LeftParen, {connected_to_last_token = !s.white_space_since_last_token}}
+		return token(.LeftParen)
 	case .RightParen:
 		return token(.RightParen)
 	}
@@ -473,9 +515,11 @@ lit_char :: proc(ch: rune) -> Token {
 	return Token{ty = .LitChar, meta = {char = ch}}
 }
 lit_float :: proc(f: float) -> Token {
-	return Token{ty = .LitFloat, meta = {float = f64(f)}}
+	return Token{ty = .LitFloat, meta = {float = f}}
 }
-
+lit_primitive_type :: proc(primitive: PrimitiveType) -> Token {
+	return Token{ty = .PrimitiveType, meta = {primitive = primitive}}
+}
 
 error_token :: #force_inline proc(err: string) -> Token {
 	return Token{ty = .Error, meta = {string = err}}
@@ -491,14 +535,14 @@ tokenize :: proc(source: string) -> (res: [dynamic]Token, err: Maybe(string)) {
 		if s.peek.size == 0 {break}
 		advance(&s)
 		token := scan_token(&s)
-		s.white_space_since_last_token = false
 		if token.ty == .Error {
 			return res, token.meta.string
 		} else if token.ty == .Eof {
 			break
-		} else {
-			append(&res, token)
 		}
+
+		token.seperation, s.seperation = s.seperation, .None
+		append(&res, token)
 	}
 	return res, nil
 
@@ -677,8 +721,6 @@ token_as_code :: proc(t: Token) -> string {
 	switch t.ty {
 	case .Error:
 		panic("error")
-	case .StatementSeperator:
-		return "\n\n"
 	case .Eof:
 		return "EOF"
 	case .LeftBrace:
@@ -779,8 +821,8 @@ token_as_code :: proc(t: Token) -> string {
 		return tprint("\"", t.meta.string, "\"")
 	case .LitChar:
 		return tprint(t.meta.char)
-	case .LitNone:
-		return "None"
+	case .PrimitiveType:
+		return primitive_type_to_string(t.meta.primitive)
 	}
 	unreachable()
 }
