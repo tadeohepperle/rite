@@ -46,7 +46,8 @@ for constants, we probably need two passes: one for type inference, one for actu
 lets do the type one first.
 
 
-    case InvalidExpression:
+switch ex in expr.kind {
+	case InvalidExpression:
 	case LogicalOr:
 	case LogicalAnd:
 	case Comparison:
@@ -57,11 +58,8 @@ lets do the type one first.
 	case IndexOp:
 	case AccessOp:
 	case Ident:
-	case LitBool:
-	case LitInt:
-	case LitFloat:
-	case LitString:
-	case LitChar:
+	case PrimitiveTypeIdent:
+	case PrimitiveLiteral:
 	case StructLiteral:
 	case ArrayLiteral:
 	case MapLiteral:
@@ -69,4 +67,4 @@ lets do the type one first.
 	case FunctionDefinition:
 	case EnumDecl:
 	case UnionDecl:
-	case LitPrimitiveType:
+	}

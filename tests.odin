@@ -50,7 +50,7 @@ main :: proc() {
 	print(module_to_string(mod))
 	// print(tokens)
 	errors := errors_create(SOURCE, tokens)
-	type_check(&mod, &errors)
+	typecheck(&mod, &errors)
 	errors_print(errors)
 	// parse_expressions_test(nil)
 }
@@ -106,19 +106,19 @@ parse_expressions_test :: proc(t: ^testing.T) {
 	}
 
 	i :: proc(i: int) -> Expression {
-		return expression(PrimitiveLiteral{{.Int, {int = i64(i)}}, 0})
+		return expression(Primitive{{.Int, {int = i64(i)}}, 0})
 	}
 	f :: proc(f: float) -> Expression {
-		return expression(PrimitiveLiteral{{.Float, {float = f}}, 0})
+		return expression(Primitive{{.Float, {float = f}}, 0})
 	}
 	s :: proc(s: string) -> Expression {
-		return expression(PrimitiveLiteral{{.String, {string = s}}, 0})
+		return expression(Primitive{{.String, {string = s}}, 0})
 	}
 	b :: proc(b: bool) -> Expression {
-		return expression(PrimitiveLiteral{{.Bool, {bool = b}}, 0})
+		return expression(Primitive{{.Bool, {bool = b}}, 0})
 	}
 	ty :: proc(prim: PrimitiveType) -> Expression {
-		return expression(PrimitiveTypeIdent{prim, 0})
+		return expression(Primitive{{.Type, {primitive_type = prim}}, 0})
 	}
 	add :: proc(a: Expression, b: Expression) -> Expression {
 		return expression(MathOp{.Add, new_clone(a), new_clone(b)})

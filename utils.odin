@@ -69,13 +69,13 @@ Hasher :: struct {
 	hash: u64,
 }
 
-hasher_init :: proc() -> Hasher {
+hasher_init :: #force_inline proc() -> Hasher {
 	return Hasher{hash = HASHER_SEED}
 }
 hasher_add :: proc {
 	hasher_add_bytes,
 	hasher_add_string,
-	hasher_add_sized,
+	hasher_add_type_hash,
 }
 hasher_add_bytes :: proc "contextless" (hasher: ^Hasher, bytes: []u8) {
 	hasher.hash = hash.fnv64a(bytes, seed = hasher.hash)
@@ -83,9 +83,14 @@ hasher_add_bytes :: proc "contextless" (hasher: ^Hasher, bytes: []u8) {
 hasher_add_string :: proc "contextless" (hasher: ^Hasher, s: string) {
 	hasher_add_bytes(hasher, transmute([]u8)s)
 }
-hasher_add_sized :: proc "contextless" (hasher: ^Hasher, val: $T) where T != string {
+// hasher_add_sized :: proc "contextless" (hasher: ^Hasher, val: $T) where T != string {
+// 	val := val
+// 	bytes := slice.bytes_from_ptr(&val, size_of(T))
+// 	hasher_add_bytes(hasher, bytes)
+// }
+hasher_add_type_hash :: proc "contextless" (hasher: ^Hasher, val: TypeHash) {
 	val := val
-	bytes := slice.bytes_from_ptr(&val, size_of(T))
+	bytes := slice.bytes_from_ptr(&val, size_of(u64))
 	hasher_add_bytes(hasher, bytes)
 }
 hasher_finish :: proc "contextless" (hasher: Hasher) -> u64 {

@@ -53,7 +53,7 @@ expect_token :: proc(p: ^Parser, ty: TokenType) -> bool {
 expect_ident :: proc(p: ^Parser) -> (Ident, bool) {
 	tok := next(p)
 	if tok.ty == .Ident {
-		return Ident{tok.meta.string, p.current - 1}, true
+		return Ident{tok.data.string, p.current - 1}, true
 	} else {
 		return {}, false
 	}
@@ -61,7 +61,7 @@ expect_ident :: proc(p: ^Parser) -> (Ident, bool) {
 accept_ident :: proc(p: ^Parser) -> (Ident, bool) {
 	cur := current(p)
 	if cur.ty == .Ident {
-		ident := Ident{cur.meta.string, p.current}
+		ident := Ident{cur.data.string, p.current}
 		p.current += 1
 		return ident, true
 	}
@@ -484,24 +484,25 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 		tok := next(p)
 		#partial switch tok.ty {
 		case .LitBool:
-			value := PrimitiveValue{.Bool, {bool = tok.meta.bool}}
-			return expression(PrimitiveLiteral{value, p.current - 1})
+			value := PrimitiveValue{.Bool, {bool = tok.data.bool}}
+			return expression(Primitive{value, p.current - 1})
 		case .LitInt:
-			value := PrimitiveValue{.Int, {int = tok.meta.int}}
-			return expression(PrimitiveLiteral{value, p.current - 1})
+			value := PrimitiveValue{.Int, {int = tok.data.int}}
+			return expression(Primitive{value, p.current - 1})
 		case .LitFloat:
-			value := PrimitiveValue{.Int, {float = tok.meta.float}}
-			return expression(PrimitiveLiteral{value, p.current - 1})
+			value := PrimitiveValue{.Int, {float = tok.data.float}}
+			return expression(Primitive{value, p.current - 1})
 		case .LitChar:
-			value := PrimitiveValue{.Int, {char = tok.meta.char}}
-			return expression(PrimitiveLiteral{value, p.current - 1})
+			value := PrimitiveValue{.Int, {char = tok.data.char}}
+			return expression(Primitive{value, p.current - 1})
 		case .LitString:
-			value := PrimitiveValue{.Int, {string = tok.meta.string}}
-			return expression(PrimitiveLiteral{value, p.current - 1})
+			value := PrimitiveValue{.Int, {string = tok.data.string}}
+			return expression(Primitive{value, p.current - 1})
 		case .PrimitiveType:
-			return expression(PrimitiveTypeIdent{tok.meta.primitive, p.current - 1})
+			value := PrimitiveValue{.Type, {primitive_type = tok.data.primitive_type}}
+			return expression(Primitive{value, p.current - 1})
 		case .Ident:
-			return expression(Ident{tok.meta.string, p.current - 1})
+			return expression(Ident{tok.data.string, p.current - 1})
 		case .Enum:
 			if !expect_token(p, .LeftBrace) {
 				return invalid_expression(

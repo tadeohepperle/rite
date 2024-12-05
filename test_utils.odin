@@ -150,7 +150,7 @@ primitive_value_to_string :: proc(prim: PrimitiveValue) -> string {
 	case .Char:
 		return tprint(prim.data.char)
 	case .Type:
-		panic("Primitive Literals should never have the .Type variant")
+		return primitive_type_to_string(prim.data.primitive_type)
 	}
 	unreachable()
 }
@@ -232,7 +232,7 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 	case AccessOp:
 		place := expression_to_string(ex.parent^)
 		return tprint(place, ".", ex.ident.name)
-	case PrimitiveLiteral:
+	case Primitive:
 		return primitive_value_to_string(ex.value)
 	case StructLiteral:
 		builder := strings.builder_make(context.temp_allocator)
@@ -300,9 +300,6 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 		return strings.to_string(builder)
 	case UnionDecl:
 		todo()
-	case PrimitiveTypeIdent:
-		return primitive_type_to_string(ex.value)
-
 	}
 	return tprint("UnhandledExpression ", expr)
 }
@@ -468,29 +465,29 @@ random_token :: proc() -> (tok: Token) {
 			"d",
 			"xxx",
 		}
-		tok.meta.string = rand.choice(IDENT_NAMES[:])
+		tok.data.string = rand.choice(IDENT_NAMES[:])
 	} else if r > 0.4 {
 		tok.ty = rand.choice(LIT_TOKENS[:])
 		#partial switch tok.ty {
 		case .LitBool:
 			// true or false
-			tok.meta.bool = rand.choice([]bool{true, false})
+			tok.data.bool = rand.choice([]bool{true, false})
 		case .LitInt:
 			// e.g. 383
-			tok.meta.int = rand.int63() % 100
+			tok.data.int = rand.int63() % 100
 		case .LitFloat:
 			// e.g. 3.40
-			tok.meta.float = math.round_f64(rand.float64() * 1000.0) / 100.0
+			tok.data.float = math.round_f64(rand.float64() * 1000.0) / 100.0
 		case .LitString:
 			// "Hello"
 			strings := [?]string{"Hello", "World", "What", "Odin", "Love", "Is"}
-			tok.meta.string = rand.choice(strings[:])
+			tok.data.string = rand.choice(strings[:])
 		case .LitChar:
 			// 'Hello'
 			chars := [?]rune{'j', 'k', 'p', 'g', 'h', 'q', 'l'}
-			tok.meta.char = rand.choice(chars[:])
+			tok.data.char = rand.choice(chars[:])
 		case .PrimitiveType:
-			tok.meta.primitive = rand.choice_enum(PrimitiveType)
+			tok.data.primitive_type = rand.choice_enum(PrimitiveType)
 		}
 	} else {
 		tok.ty = rand.choice(OTHER_TOKENS[:])
@@ -713,7 +710,7 @@ primitive_value_eq :: proc(a: PrimitiveValue, b: PrimitiveValue) -> bool {
 	case .Char:
 		return a.data.char == b.data.char
 	case .Type:
-		panic(".Type should not be in Primitive Value")
+		return a.data.primitive_type == b.data.primitive_type
 	}
 	unreachable()
 }
@@ -756,8 +753,8 @@ expression_eq :: proc(a_ex: Expression, b_ex: Expression) -> bool {
 	case Ident:
 		b := b_ex.kind.(Ident) or_return
 		return a.name == b.name
-	case PrimitiveLiteral:
-		b := b_ex.kind.(PrimitiveLiteral) or_return
+	case Primitive:
+		b := b_ex.kind.(Primitive) or_return
 		return primitive_value_eq(a.value, b.value)
 	case StructLiteral:
 		b := b_ex.kind.(StructLiteral) or_return
@@ -813,9 +810,6 @@ expression_eq :: proc(a_ex: Expression, b_ex: Expression) -> bool {
 	case UnionDecl:
 		b := b_ex.kind.(UnionDecl) or_return
 		todo()
-	case PrimitiveTypeIdent:
-		b := b_ex.kind.(PrimitiveTypeIdent) or_return
-		return a.value == b.value
 	}
 
 	return true
@@ -866,17 +860,17 @@ token_eq :: proc(a: Token, b: Token) -> bool {
 	}
 	#partial switch a.ty {
 	case .Ident:
-		return a.meta.string == b.meta.string
+		return a.data.string == b.data.string
 	case .LitInt:
-		return a.meta.int == b.meta.int
+		return a.data.int == b.data.int
 	case .LitFloat:
-		return a.meta.float == b.meta.float
+		return a.data.float == b.data.float
 	case .LitBool:
-		return a.meta.bool == b.meta.bool
+		return a.data.bool == b.data.bool
 	case .LitString:
-		return a.meta.string == b.meta.string
+		return a.data.string == b.data.string
 	case .LitChar:
-		return a.meta.char == b.meta.char
+		return a.data.char == b.data.char
 	}
 	return true
 }

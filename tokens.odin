@@ -14,16 +14,7 @@ Tokens :: struct {
 Token :: struct {
 	ty:         TokenType,
 	seperation: SeperationToPrevToken,
-	meta:       TokenValue,
-}
-
-TokenValue :: struct #raw_union {
-	int:       i64,
-	float:     f64,
-	string:    string,
-	bool:      bool,
-	char:      rune,
-	primitive: PrimitiveType,
+	data:       PrimitiveData,
 }
 PrimitiveType :: enum u8 {
 	None,
@@ -246,14 +237,14 @@ scan_number :: proc(s: ^Scanner) -> Token {
 		float_value, ok := strconv.parse_f64(numeric_string)
 		token = Token {
 			ty = .LitFloat,
-			meta = {float = float_value},
+			data = {float = float_value},
 		}
 	} else {
 		int_value, ok := strconv.parse_i64_of_base(numeric_string, 10)
 		assert(ok)
 		token = Token {
 			ty = .LitInt,
-			meta = {int = int_value},
+			data = {int = int_value},
 		}
 	}
 	return token
@@ -290,19 +281,19 @@ ident_or_keyword_token :: proc(name: string) -> Token {
 	case "false":
 		return lit_bool(false)
 	case "None":
-		return lit_primitive_type(.None)
+		return primitive_type(.None)
 	case "Type":
-		return lit_primitive_type(.Type)
+		return primitive_type(.Type)
 	case "string":
-		return lit_primitive_type(.String)
+		return primitive_type(.String)
 	case "int":
-		return lit_primitive_type(.Int)
+		return primitive_type(.Int)
 	case "float":
-		return lit_primitive_type(.Float)
+		return primitive_type(.Float)
 	case "char":
-		return lit_primitive_type(.Char)
+		return primitive_type(.Char)
 	case "bool":
-		return lit_primitive_type(.Bool)
+		return primitive_type(.Bool)
 	case "switch":
 		return token(.Switch)
 	case:
@@ -488,7 +479,7 @@ scan_token :: proc(s: ^Scanner) -> Token {
 }
 
 token :: #force_inline proc(ty: TokenType) -> Token {
-	return Token{ty = ty, meta = {}}
+	return Token{ty = ty, data = {}}
 }
 literal :: proc {
 	lit_string,
@@ -498,29 +489,29 @@ literal :: proc {
 	lit_float,
 }
 ident :: proc(name: string) -> Token {
-	return Token{ty = .Ident, meta = {string = name}}
+	return Token{ty = .Ident, data = {string = name}}
 }
 lit_string :: proc(s: string) -> Token {
-	return Token{ty = .LitString, meta = {string = s}}
+	return Token{ty = .LitString, data = {string = s}}
 }
 lit_bool :: proc(b: bool) -> Token {
-	return Token{ty = .LitBool, meta = {bool = b}}
+	return Token{ty = .LitBool, data = {bool = b}}
 }
 lit_int :: proc(i: int) -> Token {
-	return Token{ty = .LitInt, meta = {int = i64(i)}}
+	return Token{ty = .LitInt, data = {int = i64(i)}}
 }
 lit_char :: proc(ch: rune) -> Token {
-	return Token{ty = .LitChar, meta = {char = ch}}
+	return Token{ty = .LitChar, data = {char = ch}}
 }
 lit_float :: proc(f: float) -> Token {
-	return Token{ty = .LitFloat, meta = {float = f}}
+	return Token{ty = .LitFloat, data = {float = f}}
 }
-lit_primitive_type :: proc(primitive: PrimitiveType) -> Token {
-	return Token{ty = .PrimitiveType, meta = {primitive = primitive}}
+primitive_type :: proc(prim: PrimitiveType) -> Token {
+	return Token{ty = .PrimitiveType, data = {primitive_type = prim}}
 }
 
 error_token :: #force_inline proc(err: string) -> Token {
-	return Token{ty = .Error, meta = {string = err}}
+	return Token{ty = .Error, data = {string = err}}
 }
 
 tokenize :: proc(source: string) -> (res: [dynamic]Token, err: Maybe(string)) {
@@ -534,7 +525,7 @@ tokenize :: proc(source: string) -> (res: [dynamic]Token, err: Maybe(string)) {
 		advance(&s)
 		token := scan_token(&s)
 		if token.ty == .Error {
-			return res, token.meta.string
+			return res, token.data.string
 		} else if token.ty == .Eof {
 			break
 		}
@@ -552,17 +543,17 @@ tokens_to_string :: proc(tokens: []Token, line_break := false) -> string {
 		strings.write_string(&s, tprint(token.ty))
 		#partial switch token.ty {
 		case .LitChar:
-			strings.write_string(&s, tprint("('", token.meta.char, "')"))
+			strings.write_string(&s, tprint("('", token.data.char, "')"))
 		case .LitString:
-			strings.write_string(&s, tprint("(\"", token.meta.string, "\")"))
+			strings.write_string(&s, tprint("(\"", token.data.string, "\")"))
 		case .LitBool:
-			strings.write_string(&s, tprint("(", token.meta.bool, ")"))
+			strings.write_string(&s, tprint("(", token.data.bool, ")"))
 		case .LitFloat:
-			strings.write_string(&s, tprint("(", token.meta.float, ")"))
+			strings.write_string(&s, tprint("(", token.data.float, ")"))
 		case .LitInt:
-			strings.write_string(&s, tprint("(", token.meta.int, ")"))
+			strings.write_string(&s, tprint("(", token.data.int, ")"))
 		case .Ident:
-			strings.write_string(&s, tprint("(", token.meta.string, ")"))
+			strings.write_string(&s, tprint("(", token.data.string, ")"))
 		case:
 		}
 		if i != len(tokens) - 1 {
@@ -808,19 +799,19 @@ token_as_code :: proc(t: Token) -> string {
 	case .Return:
 		return "return"
 	case .Ident:
-		return t.meta.string
+		return t.data.string
 	case .LitInt:
-		return tprint(t.meta.int)
+		return tprint(t.data.int)
 	case .LitFloat:
-		return tprint(t.meta.float)
+		return tprint(t.data.float)
 	case .LitBool:
-		return "true" if t.meta.bool else "false"
+		return "true" if t.data.bool else "false"
 	case .LitString:
-		return tprint("\"", t.meta.string, "\"")
+		return tprint("\"", t.data.string, "\"")
 	case .LitChar:
-		return tprint(t.meta.char)
+		return tprint(t.data.char)
 	case .PrimitiveType:
-		return primitive_type_to_string(t.meta.primitive)
+		return primitive_type_to_string(t.data.primitive_type)
 	}
 	unreachable()
 }

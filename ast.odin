@@ -10,11 +10,21 @@ Module :: struct {
 	scope:      ^Scope,
 }
 Expression :: struct {
-	type: Type,
 	kind: ExpressionKind,
+	tag:  ExpressionTypeTag,
+	type: Type,
 }
 expression :: #force_inline proc "contextless" (kind: ExpressionKind) -> Expression {
-	return Expression{nil, kind}
+	return Expression{kind, .Unknown, nil}
+}
+ExpressionTypeTag :: enum {
+	Unknown,
+	Value,
+	Type,
+	TypeAndValue, // e.g. for zero-sized types like `None`
+}
+can_be_type :: proc "contextless" (tag: ExpressionTypeTag) -> bool {
+	return tag == .Type || tag == .TypeAndValue
 }
 
 invalid_expression :: proc "contextless" (
@@ -22,7 +32,7 @@ invalid_expression :: proc "contextless" (
 	msg: string,
 	token_range: TokenRange,
 ) -> Expression {
-	return Expression{nil, _invalid_expression(p, msg, token_range)}
+	return Expression{_invalid_expression(p, msg, token_range), .Unknown, nil}
 }
 _invalid_expression :: proc "contextless" (
 	p: ^Parser,
@@ -45,8 +55,7 @@ ExpressionKind :: union #no_nil {
 	IndexOp,
 	AccessOp,
 	Ident,
-	PrimitiveTypeIdent,
-	PrimitiveLiteral,
+	Primitive,
 	StructLiteral,
 	ArrayLiteral,
 	MapLiteral,
@@ -215,23 +224,21 @@ Ident :: struct {
 	name:      string,
 	token_idx: int,
 }
-PrimitiveLiteral :: struct {
+Primitive :: struct {
 	value:     PrimitiveValue,
 	token_idx: int,
 }
 PrimitiveValue :: struct {
-	type: PrimitiveType,
-	data: struct #raw_union {
-		int:    i64,
-		float:  f64,
-		string: string,
-		bool:   bool,
-		char:   rune,
-	},
+	type: PrimitiveType, // should never have `type = .None`! for None values, set `type = .Type, data = {primitive_type = .None}` instead.
+	data: PrimitiveData, // the problem is, there are two representations of None atm: `type = .None` and `type = .Type, data = .None`
 }
-PrimitiveTypeIdent :: struct {
-	value:     PrimitiveType,
-	token_idx: int,
+PrimitiveData :: struct #raw_union {
+	int:            i64,
+	float:          f64,
+	string:         string,
+	bool:           bool,
+	char:           rune,
+	primitive_type: PrimitiveType,
 }
 
 
@@ -412,9 +419,7 @@ expression_token_range :: proc(expr: Expression) -> TokenRange {
 		return TokenRange{parent.start_idx, ex.ident.token_idx + 1}
 	case Ident:
 		return TokenRange{ex.token_idx, ex.token_idx + 1}
-	case PrimitiveLiteral:
-		return TokenRange{ex.token_idx, ex.token_idx + 1}
-	case PrimitiveTypeIdent:
+	case Primitive:
 		return TokenRange{ex.token_idx, ex.token_idx + 1}
 	case StructLiteral:
 		range: TokenRange
