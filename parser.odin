@@ -5,6 +5,7 @@ import "core:log"
 Parser :: struct {
 	tokens:  []Token,
 	current: int,
+	errors:  ^Errors,
 }
 
 
@@ -98,42 +99,39 @@ accept_left_brace_connected_to_last_token :: proc(p: ^Parser) -> bool {
 
 expect_statements :: proc(p: ^Parser) -> []Statement {
 	res: [dynamic]Statement
-	for (.CouldBeStatementStart in TOKEN_TYPE_FLAGS[current(p).ty]) {
-		expr := expect_statement(p)
-		append(&res, expr)
-	}
-	cur := current(p).ty
-	if cur != .RightBrace && cur != .Eof {
-		invalid_range, _ := skip_until(p, .RightBrace)
-		append(&res, invalid_expression(p, "invalid tokens after statements", invalid_range))
+	for {
+		cur := current(p).ty
+		if cur == .RightBrace || cur == .Eof {
+			break
+		}
+
+		stmt, stmt_ok := expect_statement(p)
+		if stmt_ok {
+			append(&res, stmt)
+		}
 	}
 	return res[:]
 }
 
-expect_statement :: proc(p: ^Parser) -> Statement {
+expect_statement :: proc(p: ^Parser) -> (res: Statement, success: bool) {
 	current_ty := current(p).ty
 	if current_ty == .Break {
 		skip(p) // the .Break
-		return Statement(BreakStatement{})
+		return Statement(BreakStatement{}), true
 	} else if current_ty == .Return {
 		skip(p) // the .Return
 		return_stmt: ReturnStatement
 		if has_flag(current(p).ty, .CouldBeExpressionStart) {
-			return_stmt.value = expect_expression(p)
+			return_stmt.value = expect_expression(p) or_return
 		}
-		return Statement(return_stmt)
+		return Statement(return_stmt), true
 	} else if current_ty == .For {
 		todo() // XXX
 		// for_loop := expect_for_loop(p) 
 		// return Statement(for_loop), nil
 	} else if current_ty == .If {
-
-		switch if_or_invalid in expect_if_statement(p) {
-		case IfStatement:
-			return Statement(if_or_invalid)
-		case InvalidExpression:
-			return Statement(expression(if_or_invalid))
-		}
+		if_stmt := expect_if_statement(p) or_return
+		return Statement(if_stmt), true
 	} else if current_ty == .Switch {
 		todo()
 	} else {
@@ -143,74 +141,67 @@ expect_statement :: proc(p: ^Parser) -> Statement {
 }
 
 // only call if you already know the current token is .If
-
-IfStatementOrErr :: union #no_nil {
-	IfStatement,
-	InvalidExpression,
-}
-expect_if_statement :: proc(p: ^Parser) -> (statement: IfStatementOrErr) {
+expect_if_statement :: proc(p: ^Parser) -> (if_stmt: IfStatement, success: bool) {
 	start := p.current
 	assert(expect_token(p, .If))
-	if_stmt: IfStatement
-	if_stmt.condition = expect_expression(p)
+	if_stmt.condition = expect_expression(p) or_return
 	if !expect_token(p, .LeftBrace) {
-		err_range := TokenRange{start, p.current}
-		return _invalid_expression(p, "expected `{` after condition of If-Statement", err_range)
+		errors_add(
+			p.errors,
+			TokenRange{start, p.current},
+			"expected `{` after condition of If-Statement",
+		)
+		return {}, false
 	}
 	if_stmt.body = expect_statements(p)
-
-	if invalid_ex, is_invalid := _eat_right_brace(p, start).(InvalidExpression); is_invalid {
-		return invalid_ex
-	}
+	expect_token(p, .RightBrace) or_return
 	if !expect_token(p, .Else) {
-		return if_stmt
+		return if_stmt, true
 	}
 
-	cur := current(p).ty
-	if cur == .If {
-		// else if block:
-		switch else_if in expect_if_statement(p) {
-		case IfStatement:
-			if_stmt.else_block = new_clone(else_if)
-			return if_stmt
-		case InvalidExpression:
-			return _invalid_expression(p, else_if.msg, TokenRange{start, else_if.tokens.end_idx})
+
+	#partial switch current(p).ty {
+
+
+	case .If:
+		// an `else if` block
+		nested_if, nested_if_ok := expect_if_statement(p)
+		if !nested_if_ok {
+			return {}, false
 		}
-	} else if cur == .LeftBrace {
-		skip(p) // skip over `{`
-		// else block
+		if_stmt.else_block = new_clone(nested_if)
+		return if_stmt, true
+	case .LeftBrace:
+		// a normal `else` block
+		skip(p) // skip over the `{` after the `else` token
 		else_block: ElseBlock
 		else_block.body = expect_statements(p)
-		if invalid_ex, is_invalid := _eat_right_brace(p, start).(InvalidExpression); is_invalid {
-			return invalid_ex
-		} else {
-			if_stmt.else_block = else_block
-			return if_stmt
+		if !expect_token(p, .RightBrace) {
+			errors_add(
+				p.errors,
+				TokenRange{start, p.current},
+				"expected right brace token after statements in else block",
+			)
+			return {}, false
 		}
-	} else {
-		// no `{` after else, error:
-		return _invalid_expression(p, "expected `{` after `else`", TokenRange{start, p.current})
+		if_stmt.else_block = else_block
+		return if_stmt, true
+	case:
+		errors_add(p.errors, TokenRange{start, p.current}, "expected `{` or `if` after `else`")
+		return {}, false
 	}
 	unreachable()
-
-	_eat_right_brace :: proc(p: ^Parser, start: int) -> Maybe(InvalidExpression) {
-		if expect_token(p, .RightBrace) {
-			return nil
-		}
-		range, found_brace := skip_until(p, .RightBrace)
-		if found_brace {
-			skip(p)
-			range.end_idx += 1
-		}
-		range.start_idx = start
-		return _invalid_expression(p, "expected `}` after statements", range)
-	}
 }
 
-expect_assignment_declaration_or_expression :: proc(p: ^Parser) -> (statement: Statement) {
+expect_assignment_declaration_or_expression :: proc(
+	p: ^Parser,
+) -> (
+	stmt: Statement,
+	success: bool,
+) {
 	start := p.current
-	first_expr := expect_expression(p)
-	current_ty := current(p).ty
+	first_expr := expect_expression(p) or_return
+	cur := current(p).ty
 
 	// maybe this is the target place of an assignment with =, +=, -=, *= or /=:
 	TokenAndAssignKind :: struct {
@@ -226,55 +217,59 @@ expect_assignment_declaration_or_expression :: proc(p: ^Parser) -> (statement: S
 	}
 	for check in CHECK_ASSIGNMENTS {
 		if expect_token(p, check.token_ty) {
-			second_expr := expect_expression(p)
-			return Statement(
-				Assignment{place = first_expr, kind = check.assign_kind, value = second_expr},
-			)
+			second_expr := expect_expression(p) or_return
+			assignment := Assignment {
+				place = first_expr,
+				kind  = check.assign_kind,
+				value = second_expr,
+			}
+			return Statement(assignment), true
 		}
 	}
 
 	// maybe this is a declaration with ::, : Ty :, :=, : Ty or : Ty =  
-	if current_ty == .ColonColon || current_ty == .Colon || current_ty == .ColonAssign {
-		// place needs to be single ident for declaration now:
-		ident: Ident = ---
-		if idnt, is_idnt := first_expr.kind.(Ident); is_idnt {
-			ident = idnt
-		} else {
+	if cur == .ColonColon || cur == .Colon || cur == .ColonAssign {
+		// declaration place needs to be single ident for now: (future: support e.g. Vec2(T) :: {T,T})
+		ident, is_ident := first_expr.kind.(Ident)
+		if !is_ident {
 			skip(p) // skip the current_ty
-			return Statement(
-				invalid_expression(
-					p,
-					"first expression in declaration must be ident",
-					TokenRange{start, p.current},
-				),
+			errors_add(
+				p.errors,
+				TokenRange{start, p.current},
+				"first expression in declaration must be ident",
 			)
+			return {}, false
 		}
 		decl := Declaration {
 			ident = ident,
 		}
 		if expect_token(p, .ColonColon) {
 			decl.kind = .ConstInferred
-			decl.value = expect_expression(p)
+			value_ok: bool
+			decl.value = expect_expression(p) or_return
 		} else if expect_token(p, .ColonAssign) {
 			decl.kind = .RuntimeInferred
-			decl.value = expect_expression(p)
+			value_ok: bool
+			decl.value = expect_expression(p) or_return
 		} else if expect_token(p, .Colon) {
-			decl.ty = expect_expression(p)
+			decl.ty = expect_expression(p) or_return
 			if expect_token(p, .Colon) {
 				decl.kind = .ConstExplicit
-				decl.value = expect_expression(p)
+				decl.value = expect_expression(p) or_return
+				// future: maybe if decl.value is not valid expression, we can still move on because at least the type is known already,
+				// set Placeholder value maybe
 			} else if expect_token(p, .Assign) {
 				decl.kind = .RuntimeExplicit
-				decl.value = expect_expression(p)
+				decl.value = expect_expression(p) or_return
 			} else {
 				decl.kind = .RuntimeExplicitDefault
 			}
 		}
 		assert(decl.ty != nil || decl.value != nil)
-		return Statement(decl)
+		return Statement(decl), true
 	}
-	// just return the parsed expression, there seems to be no assignment or declaration here:
-	return Statement(first_expr)
+	// just return the parsed expression as a single statement, there seems to be no assignment or declaration here:
+	return Statement(first_expr), true
 }
 
 expect_expressions :: proc(p: ^Parser, until: TokenType) -> []Expression {
@@ -293,44 +288,45 @@ _expect_expressions :: #force_inline proc(
 		if cur == until || cur == .Eof {
 			break
 		}
-		append(res, expect_expression(p))
+		expr := expect_expression(p) or_continue
+		append(res, expr)
 	}
 }
 
-expect_expression :: proc(p: ^Parser) -> Expression {
+expect_expression :: proc(p: ^Parser) -> (Expression, bool) {
 	log.info("expect_expression")
 
-	expr := expect_logical_or_or_higher(p)
+	expr, ok := expect_logical_or_or_higher(p)
 	log.info("-> got expr:", expr)
-	return expr
+	return expr, ok
 
-	expect_logical_or_or_higher :: proc(p: ^Parser) -> (expr: Expression) {
+	expect_logical_or_or_higher :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
 		log.info("  expect_logical_or_or_higher")
-		expr = expect_logical_and_or_higher(p)
+		expr = expect_logical_and_or_higher(p) or_return
 		if current(p).ty == .Or {
-			second := expect_logical_or_or_higher(p)
-			return expression(LogicalOp{.Or, new_clone(expr), new_clone(second)})
+			second := expect_logical_or_or_higher(p) or_return
+			return expression(LogicalOp{.Or, new_clone(expr), new_clone(second)}), true
 		} else {
-			return expr
+			return expr, true
 		}
 	}
 
-	expect_logical_and_or_higher :: proc(p: ^Parser) -> (expr: Expression) {
+	expect_logical_and_or_higher :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
 		log.info("    expect_logical_and_or_higher")
-		expr = expect_comparison_or_higher(p)
+		expr = expect_comparison_or_higher(p) or_return
 		if current(p).ty == .And {
-			second := expect_logical_and_or_higher(p)
-			return expression(LogicalOp{.And, new_clone(expr), new_clone(second)})
+			second := expect_logical_and_or_higher(p) or_return
+			return expression(LogicalOp{.And, new_clone(expr), new_clone(second)}), true
 		} else {
-			return expr
+			return expr, true
 		}
 	}
 
-	expect_comparison_or_higher :: proc(p: ^Parser) -> Expression {
+	expect_comparison_or_higher :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
 		log.info("      expect_comparison_or_higher")
-		first := expect_add_or_sub_or_higher(p)
+		first := expect_add_or_sub_or_higher(p) or_return
 		if _, is_cmp := cmp_operator_token_ty_to_kind(current(p).ty); !is_cmp {
-			return first
+			return first, true
 		}
 		cmp_operator_token_ty_to_kind :: proc(
 			ty: TokenType,
@@ -362,70 +358,67 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 			}
 			// skip the comparison_operator
 			skip(p)
-			next_expr := expect_add_or_sub_or_higher(p)
+			next_expr := expect_add_or_sub_or_higher(p) or_return
 			append(&others, CompareOpElement{kind, next_expr})
 		}
-		return expression(CompareOp{first = new_clone(first), others = others[:]})
+		return expression(CompareOp{first = new_clone(first), others = others[:]}), true
 	}
-	expect_add_or_sub_or_higher :: proc(p: ^Parser) -> Expression {
+	expect_add_or_sub_or_higher :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
 		log.info("      expect_add_or_sub_or_higher")
-		first := expect_mul_or_div_or_higher(p)
+		first := expect_mul_or_div_or_higher(p) or_return
 		if expect_token(p, .Add) {
-			second := expect_add_or_sub_or_higher(p)
-			return math_op_expr(.Add, first, second)
+			second := expect_add_or_sub_or_higher(p) or_return
+			return math_op_expr(.Add, first, second), true
 		} else if expect_token(p, .Sub) {
-			second := expect_add_or_sub_or_higher(p)
-			return math_op_expr(.Sub, first, second)
+			second := expect_add_or_sub_or_higher(p) or_return
+			return math_op_expr(.Sub, first, second), true
 		}
-		return first
+		return first, true
 	}
-	expect_mul_or_div_or_higher :: proc(p: ^Parser) -> Expression {
+	expect_mul_or_div_or_higher :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
 		log.info("        expect_mul_or_div_or_higher")
-		first := expect_unary_like_or_higher(p)
+		first := expect_unary_like_or_higher(p) or_return
 		if expect_token(p, .Mul) {
-			second := expect_mul_or_div_or_higher(p)
-			return math_op_expr(.Mul, first, second)
+			second := expect_mul_or_div_or_higher(p) or_return
+			return math_op_expr(.Mul, first, second), true
 		} else if expect_token(p, .Div) {
-			second := expect_mul_or_div_or_higher(p)
-			return math_op_expr(.Div, first, second)
+			second := expect_mul_or_div_or_higher(p) or_return
+			return math_op_expr(.Div, first, second), true
 		}
-		return first
+		return first, true
 	}
-	expect_unary_like_or_higher :: proc(p: ^Parser) -> (expr: Expression) {
+	expect_unary_like_or_higher :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
 		log.info("        expect_unary_like_or_higher")
 		if expect_token(p, .Sub) {
 			// negative numeric expressions e.g. -2
-			first := expect_unary_like_or_higher(p)
-			return expression(NegateExpression{inner = new_clone(first)})
+			first := expect_unary_like_or_higher(p) or_return
+			return expression(NegateExpression{inner = new_clone(first)}), true
 		} else if expect_token(p, .Not) {
 			// not operator e.g. !myfun()
-			first := expect_unary_like_or_higher(p)
-			return expression(NotExpression{inner = new_clone(first)})
+			first := expect_unary_like_or_higher(p) or_return
+			return expression(NotExpression{inner = new_clone(first)}), true
 		} else {
+			start := p.current
 			// single value or parens around some expression, then check if function call or indexing directly behind:
 
 			// TODO: check for continuation of the expression via .Dot
 			// - either accesses some value like so:     age := get_person(3).age
 			// - or calls a function with dot noration:  10.mul(3).print()
-			expr_ok: bool
-			expr = expect_single_value(p)
+			expr = expect_single_value(p) or_return
 			log.info("    -> got single value:", expr)
-			if !expression_valid(expr) {
-				return expr
-			}
-
 			for {
 				if expect_token(p, .Dot) {
 					if ident, ident_ok := expect_ident(p); ident_ok {
 						parent := new_clone(expr)
 						expr = expression(AccessOp{parent, ident})
 					} else {
-						range := expression_token_range(expr)
-						expr = invalid_expression(
-							p,
-							"an ident needs to follow the dot",
-							TokenRange{range.start_idx, p.current},
+						errors_add(
+							p.errors,
+							TokenRange{start, p.current},
+							"ident expected, following `.`, instead found",
+							token_as_code(current(p)),
 						)
+						return {}, false
 					}
 				} else if accept_left_paren_connected_to_last_token(p) {
 					args := expect_expressions(p, .RightParen)
@@ -434,7 +427,8 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 					fn_expr := new_clone(expr)
 					expr = expression(CallOp{fn_expr, args})
 				} else if accept_left_bracket_connected_to_last_token(p) {
-					index := expect_expression(p)
+					index := expect_expression(p) or_return
+
 					right_bracket_afterwards := expect_token(p, .RightBracket)
 					assert(right_bracket_afterwards) // todo, deal with error
 					place := new_clone(expr)
@@ -448,95 +442,72 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 						break
 					}
 					lit_struct: StructLiteral
-					fields_ok: bool
-					lit_struct.fields, fields_ok = expect_struct_literal_fields(p)
-					if fields_ok {
-						lit_struct.name_or_brace_token_idx = new_clone(expr)
-						expr = expression(lit_struct)
-					} else {
-						name_range := expression_token_range(expr)
-						skip_range, found_right_brace := skip_until(p, .RightBrace)
-						invalid_range := TokenRange{name_range.start_idx, skip_range.end_idx}
-						if found_right_brace {
-							invalid_range.end_idx += 1
-							skip(p)
-						}
-						expr = invalid_expression(
-							p,
-							"invalid struct literal fields",
-							invalid_range,
-						)
-						if !found_right_brace {
-							return expr
-						}
-					}
+					lit_struct.fields = expect_struct_literal_fields(p) or_return
+					lit_struct.name_or_brace_token_idx = new_clone(expr)
+					expr = expression(lit_struct)
 				}
 			}
-			return expr
+			return expr, true
 		}
 	}
-	expect_single_value :: proc(p: ^Parser) -> Expression {
+	expect_single_value :: proc(p: ^Parser) -> (expr: Expression, success: bool) {
 		log.info("        expect_single_value")
 		if .CouldBeExpressionStart not_in TOKEN_TYPE_FLAGS[current(p).ty] {
+			errors_add(
+				p.errors,
+				TokenRange{p.current, p.current + 1},
+				current(p).ty,
+				" token cannot be expression start",
+			)
 			skip(p)
-			return invalid_expression(p, "cannot be expression start", {p.current, p.current + 1})
+			return {}, false
 		}
+		start := p.current
 		tok := next(p)
 		#partial switch tok.ty {
 		case .LitBool:
 			value := PrimitiveValue{.Bool, {bool = tok.data.bool}}
-			return expression(Primitive{value, p.current - 1})
+			return expression(Primitive{value, start}), true
 		case .LitInt:
 			value := PrimitiveValue{.Int, {int = tok.data.int}}
-			return expression(Primitive{value, p.current - 1})
+			return expression(Primitive{value, start}), true
 		case .LitFloat:
 			value := PrimitiveValue{.Int, {float = tok.data.float}}
-			return expression(Primitive{value, p.current - 1})
+			return expression(Primitive{value, start}), true
 		case .LitChar:
 			value := PrimitiveValue{.Int, {char = tok.data.char}}
-			return expression(Primitive{value, p.current - 1})
+			return expression(Primitive{value, start}), true
 		case .LitString:
 			value := PrimitiveValue{.Int, {string = tok.data.string}}
-			return expression(Primitive{value, p.current - 1})
+			return expression(Primitive{value, start}), true
 		case .PrimitiveType:
 			value := PrimitiveValue{.Type, {primitive_type = tok.data.primitive_type}}
-			return expression(Primitive{value, p.current - 1})
+			return expression(Primitive{value, start}), true
 		case .Ident:
-			return expression(Ident{tok.data.string, p.current - 1})
+			return expression(Ident{tok.data.string, start}), true
 		case .Enum:
 			if !expect_token(p, .LeftBrace) {
-				return invalid_expression(
-					p,
-					"following enum keyword there should be '{'",
-					TokenRange{p.current - 1, p.current},
+				errors_add(
+					p.errors,
+					TokenRange{start, p.current},
+					"enum keyword without `{` following",
 				)
+				return {}, false
 			}
-			enum_token_idx := p.current - 2
 			variants: [dynamic]Ident
 			for {
-				cur := current(p).ty
-				if cur == .RightBrace || cur == .Eof {
-					break
-				}
 				if ident, ok := accept_ident(p); ok {
 					append(&variants, ident)
+				} else if expect_token(p, .RightBrace) {
+					break
 				} else {
-					// error! should only have idents in here! (skip until closing brace or Eof, then set this as an error expression)
-					for {
-						tok := next(p).ty
-						if tok == .RightBrace || tok == .Eof {
-							break
-						}
-					}
-					return invalid_expression(
-						p,
-						"invalid enum definition",
-						TokenRange{enum_token_idx, p.current},
-					)
+					delete(variants)
+					skip_until_after(p, .RightBrace)
+					errors_add(p.errors, {start, p.current}, "non ident in enum decl")
+					return {}, false
 				}
 			}
-			expect_token(p, .RightBrace)
-			return expression(EnumDecl{variants[:], enum_token_idx})
+			return expression(EnumDecl{variants[:], start}), true
 		case .LeftParen:
 			start := p.current - 1
 			this := current(p)
@@ -549,30 +520,59 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 				args_are_ok: bool
 				fn_def.args, args_are_ok = expect_function_definition_args(p)
 				if !args_are_ok || !expect_token(p, .RightParen) {
-					return invalid_expression(p, "invalid fn args", TokenRange{start, p.current})
+					skip_until_after(p, .RightParen)
+					errors_add(p.errors, TokenRange{start, p.current}, "invalid fn args")
+					return {}, false
 				}
 
 				// return type arrow is optional, if not present -> None is assumed.
-
 				if expect_token(p, .Arrow) {
-					return_type := expect_expression(p)
+					return_type, return_type_ok := expect_expression(p)
+					if !return_type_ok {
+						errors_add(
+							p.errors,
+							TokenRange{start, p.current},
+							"invalid return type expression after `->`",
+						)
+						return {}, false
+					}
 					fn_def.return_type = new_clone(return_type)
 				}
 				if !expect_token(p, .LeftBrace) {
-					return invalid_expression(p, "Expected '{'", TokenRange{start, p.current})
+					errors_add(
+						p.errors,
+						TokenRange{start, p.current},
+						"Expected `{` to start function body",
+					)
+					return {}, false
 				}
 				fn_def.body = expect_statements(p)
 				if !expect_token(p, .RightBrace) {
-					return invalid_expression(p, "Expected '}'", TokenRange{start, p.current})
+					errors_add(
+						p.errors,
+						TokenRange{start, p.current},
+						"Expected '}' to close function body",
+					)
+					return {}, false
 				}
-				return expression(fn_def)
+				return expression(fn_def), true
 			} else if this.ty == .RightParen {
 				// function definition or signature type without arguments
 				// so `() -> Foo {}`, `() {}` or `() -> Foo`
 				skip(p) // skip over the `)`.
 				return_type: Maybe(^Expression) = nil
 				if expect_token(p, .Arrow) {
-					return_type = new_clone(expect_expression(p))
+					arrow_idx := p.current - 1
+					return_ty, return_type_ok := expect_expression(p)
+					if !return_type_ok {
+						errors_add(
+							p.errors,
+							TokenRange{arrow_idx, p.current},
+							"Invalid return type expression after `->`",
+						)
+						return {}, false
+					}
+					return_type = new_clone(return_ty)
 				}
 				if expect_token(p, .LeftBrace) {
 					// start of function definition
@@ -583,60 +583,79 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 					}
 					fn_def.body = expect_statements(p)
 					if expect_token(p, .RightBrace) {
-						return expression(fn_def)
+						return expression(fn_def), true
 					} else {
-						invalid_range, found_brace := skip_until(p, .RightBrace)
-						if found_brace {
-							skip(p)
-							invalid_range.end_idx += 1
-						}
-						return invalid_expression(
-							p,
-							"function body not closed",
-							TokenRange{start, invalid_range.end_idx},
+						skip_until_after(p, .RightBrace)
+						errors_add(
+							p.errors,
+							TokenRange{start, p.current},
+							"Expected '}' to close function body",
 						)
+						return {}, false
 					}
 				} else {
 					// function signature without body or just `()`
 					if return_type, ok := return_type.(^Expression); ok {
-						return expression(
-							FunctionSignature{arg_types = nil, return_type = return_type},
-						)
+						function_signature := FunctionSignature {
+							arg_types   = nil,
+							return_type = return_type,
+						}
+						return expression(function_signature), true
 					} else {
-						return invalid_expression(
-							p,
-							"`()` is not an expression",
-							{start, start + 2},
-						)
+						errors_add(p.errors, {start, start + 2}, "`()` is not an expression")
+						return {}, false
 					}
 				}
 			} else {
-				expr := expect_expression(p)
+				expr := expect_expression(p) or_return
 				this = current(p)
 				next = peek(p)
 				if this.ty == .RightParen && next.ty != .Arrow {
 					// expression in parentheses, e.g. (4+5)
-
 					if expect_token(p, .RightParen) {
-						return expr
+						return expr, true
 					} else {
-						err_range, _found_right_paren := skip_until(p, .RightParen)
-						return invalid_expression(
-							p,
-							"more than one expression in parens",
+						skip_until_after(p, .RightParen)
+						errors_add(
+							p.errors,
 							TokenRange{start, p.current},
+							"more than one expression in parens",
 						)
+						return {}, false
 					}
 				} else {
 					// function type/signature
 					// parse the rest of the expressions in the arg type list
 					arg_types: [dynamic]Expression = {expr}
 					_expect_expressions(p, .RightParen, &arg_types)
-					expect_token(p, .RightParen)
-					expect_token(p, .Arrow)
-					return_type := expect_expression(p)
+					if !expect_token(p, .RightParen) {
+						errors_add(
+							p.errors,
+							TokenRange{start, p.current},
+							"expected `)` after arg types",
+						)
+						return {}, false
+					}
+					arrow_idx := p.current
+					if !expect_token(p, .Arrow) {
+						errors_add(
+							p.errors,
+							TokenRange{start, p.current},
+							"expected `->` after ( ...arg_types ) in function signature",
+						)
+						return {}, false
+					}
+					return_type, return_type_ok := expect_expression(p)
+					if !return_type_ok {
+						errors_add(
+							p.errors,
+							TokenRange{arrow_idx, p.current},
+							"Invalid return type expression after `->`",
+						)
+						return {}, false
+					}
 					function_signature := FunctionSignature{arg_types[:], new_clone(return_type)}
-					return expression(function_signature)
+					return expression(function_signature), true
 				}
 			}
 			unreachable()
@@ -646,42 +665,32 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 			start_bracket_token_idx := p.current - 1
 			values := expect_expressions(p, .RightBracket)
 			if !expect_token(p, .RightBracket) {
-				return invalid_expression(
-					p,
-					"list or map literal not ended",
+				errors_add(
+					p.errors,
 					{start_bracket_token_idx, p.current + 1},
+					"list or map literal not ended, expected `]` after expressions",
 				)
 			} else {
-				return expression(ArrayLiteral{values, start_bracket_token_idx})
+				return expression(ArrayLiteral{values, start_bracket_token_idx}), true
 			}
-
 		case .LeftBrace:
 			brace_idx := p.current - 1
 			lit_struct: StructLiteral
 			lit_struct.name_or_brace_token_idx = brace_idx
 
 			fields_ok: bool
-			lit_struct.fields, fields_ok = expect_struct_literal_fields(p)
-
-			if fields_ok {
-				if expect_token(p, .RightBrace) {
-					return expression(lit_struct)
-				} else {
-					return invalid_expression(
-						p,
-						"struct literal not ended with right brace",
-						{brace_idx, p.current + 1},
-					)
-				}
-			} else {
-				skip_range, found_right_brace := skip_until(p, .RightBrace)
-				invalid_range := TokenRange{brace_idx, skip_range.end_idx}
-				if found_right_brace {
-					invalid_range.end_idx += 1
-					skip(p)
-				}
-				return invalid_expression(p, "invalid struct literal fields", invalid_range)
+			lit_struct.fields = expect_struct_literal_fields(p) or_return
+			if !expect_token(p, .RightBrace) {
+				errors_add(
+					p.errors,
+					{brace_idx, p.current + 1},
+					"expected `}` to close struct literal, found",
+					token_as_code(current(p)),
+				)
+				skip_until_after(p, .RightBrace)
+				return {}, false
 			}
+			return expression(lit_struct), true
 		}
 		print("tok", tok, p.current, p.tokens)
 		panic(
@@ -700,6 +709,19 @@ skip_until :: proc(p: ^Parser, until: TokenType) -> (range: TokenRange, success:
 			return TokenRange{start, p.current}, true
 		} else if tok_ty == .Eof {
 			return TokenRange{start, p.current}, false
+		}
+		skip(p)
+	}
+}
+
+skip_until_after :: proc(p: ^Parser, until: TokenType) -> (found_until: bool) {
+	for {
+		tok_ty := current(p).ty
+		if tok_ty == until {
+			skip(p)
+			return true
+		} else if tok_ty == .Eof {
+			return false
 		}
 		skip(p)
 	}
@@ -728,33 +750,18 @@ expect_function_definition_args :: proc(p: ^Parser) -> (args: []FunctionArg, suc
 	args_list: [dynamic]FunctionArg
 	for {
 		if current(p).ty == .RightParen {
-			break
+			return args_list[:], true
 		}
-		if ident, ok := accept_ident(p); ok {
-			if expect_token(p, .Colon) {
-				ty := expect_expression(p)
-				append(&args_list, FunctionArg{ident, ty})
-			} else {
-				err_range, found_colon := skip_until(p, .Colon)
-				if found_colon {
-					skip(p)
-					ty := expect_expression(p)
-					append(&args_list, FunctionArg{ident, ty})
-				} else {
-					break // returning the current args list
-				}
-			}
-		} else {
-			return args_list[:], false
-		}
+		ident := accept_ident(p) or_return
+		expect_token(p, .Colon) or_return
+		ty := expect_expression(p) or_return
+		append(&args_list, FunctionArg{ident, ty})
 	}
-	return args_list[:], true
 }
 
 
 // fields inside the `{` and `}` curcly braces. Could be no fields (nil), named fields, or unnamed fields
 // but not mixing named and unnamed fields!
-// the error handling here is not great to be honest...
 expect_struct_literal_fields :: proc(p: ^Parser) -> (ret: StructFields, success: bool) {
 	cur := current(p)
 	if cur.ty == .RightBrace {
@@ -764,19 +771,28 @@ expect_struct_literal_fields :: proc(p: ^Parser) -> (ret: StructFields, success:
 	if cur.ty == .Ident && next.ty == .Colon {
 		// expect named fields e.g. `foo: 45  bar: "Hello"`
 		fields: [dynamic]NamedField
+
 		for {
+			last_ok_idx := p.current
 			pair_ok: bool
 			if ident, ok := accept_ident(p); ok {
 				if expect_token(p, .Colon) {
 					cur = current(p)
 					if cur.ty != .Eof && cur.ty != .RightBrace {
-						value := expect_expression(p)
-						append(&fields, NamedField{ident, value})
-						pair_ok = true
+						if value, value_ok := expect_expression(p); value_ok {
+							append(&fields, NamedField{ident, value})
+							pair_ok = true
+						}
 					}
 				}
 			}
 			if !pair_ok {
+				skip_until_after(p, .RightBrace)
+				errors_add(
+					p.errors,
+					TokenRange{last_ok_idx, p.current},
+					"invalid expression in struct literal",
+				)
 				return nil, false
 			}
 			if current(p).ty == .RightBrace {
@@ -790,10 +806,11 @@ expect_struct_literal_fields :: proc(p: ^Parser) -> (ret: StructFields, success:
 }
 
 
-parse :: proc(tokens: []Token) -> Module {
+parse :: proc(tokens: []Token, errors: ^Errors) -> Module {
 	parser := Parser {
 		tokens  = tokens,
 		current = 0,
+		errors  = errors,
 	}
 	statements := expect_statements(&parser)
 	return Module{statements = statements, tokens = tokens, scope = nil}
@@ -805,5 +822,5 @@ parse_expression :: proc(tokens: []Token) -> Expression {
 		tokens  = tokens,
 		current = 0,
 	}
-	return expect_expression(&parser)
+	return expect_expression(&parser) or_else panic("could not parse expr")
 }

@@ -36,8 +36,6 @@ declaration_outer_dependencies :: proc(decl: Declaration) -> map[string]Empty {
 
 	_collect_expr :: proc(deps: ^map[string]Empty, expr: Expression) {
 		switch ex in expr.kind {
-		case InvalidExpression:
-		// nothing to do
 		case LogicalOp:
 			_collect_expr(deps, ex.first^)
 			_collect_expr(deps, ex.second^)
@@ -249,9 +247,9 @@ errors_print :: proc(this: Errors) {
 errors_create :: proc(source: string, all_tokens: []Token) -> Errors {
 	return Errors{source = source, all_tokens = all_tokens, errors = {}}
 }
-// errors_add :: proc(this: ^Errors, range: TokenRange, msg_parts: ..any) {
-// 	append(&this.errors, Error{tprint(..msg_parts), range, .Unknown})
-// }
+errors_add :: proc(this: ^Errors, range: TokenRange, msg_parts: ..any) {
+	append(&this.errors, Error{tprint(..msg_parts), range, .Unknown})
+}
 error_expr :: proc(this: ^Errors, expr: ^Expression, msg: string) {
 	range := expression_token_range(expr^)
 	msg := tprint("Invalid expression `", expression_to_string(expr^), "`: ", msg) // future: rn stupid and inefficient, ik
@@ -707,7 +705,7 @@ typecheck_any_expr :: proc(using ctx: ^TypeCheckCtx, expr: ^Expression) {
 // only valid types are accepted, e.g. int or { name: string, address: {foo: [int], bar: bool } } or [{int, int, int}]
 typecheck_type_expr :: proc(using ctx: ^TypeCheckCtx, expr: ^Expression) {
 	switch &ex in expr.kind {
-	case InvalidExpression, LogicalOp, CompareOp, MathOp, NegateExpression, NotExpression:
+	case LogicalOp, CompareOp, MathOp, NegateExpression, NotExpression:
 		break
 	case CallOp:
 		todo() // check the function and the args, eval type function at compile time

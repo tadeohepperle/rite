@@ -27,24 +27,8 @@ can_be_type :: proc "contextless" (tag: ExpressionTypeTag) -> bool {
 	return tag == .Type || tag == .TypeAndValue
 }
 
-invalid_expression :: proc "contextless" (
-	p: ^Parser,
-	msg: string,
-	token_range: TokenRange,
-) -> Expression {
-	return Expression{_invalid_expression(p, msg, token_range), .Unknown, nil}
-}
-_invalid_expression :: proc "contextless" (
-	p: ^Parser,
-	msg: string,
-	token_range: TokenRange,
-) -> InvalidExpression {
-	return InvalidExpression{msg, token_range, p.tokens[token_range.start_idx:token_range.end_idx]}
-}
-
 // todo: should be struct for tracking type in type inference!
 ExpressionKind :: union #no_nil {
-	InvalidExpression,
 	LogicalOp,
 	CompareOp,
 	MathOp,
@@ -63,19 +47,11 @@ ExpressionKind :: union #no_nil {
 	EnumDecl,
 	UnionDecl,
 }
-INVALID_EXPRESSION :: InvalidExpression{}
-InvalidExpression :: struct {
-	msg:          string,
-	tokens:       TokenRange,
-	tokens_slice: []Token,
+
+Placeholder :: struct {
+	token_idx: int,
 }
-expression_valid :: proc(ex: Expression) -> bool {
-	if _, invalid := ex.kind.(InvalidExpression); invalid {
-		return false
-	} else {
-		return true
-	}
-}
+
 // e.g. (int, int, MyArr(string), {a: string, b: {int, int}}) -> {}
 FunctionSignature :: struct {
 	arg_types:   []Expression,
@@ -339,6 +315,7 @@ init_token_type_flags :: proc() -> (flags: [TokenType]TokenFlags) {
 			.LeftBrace,
 			.Break,
 			.Return,
+			.Dot,
 		},
 	)
 	set(
@@ -358,6 +335,7 @@ init_token_type_flags :: proc() -> (flags: [TokenType]TokenFlags) {
 			.Sub,
 			.Not,
 			.Enum,
+			.Dot,
 		},
 	)
 	set(
@@ -386,8 +364,6 @@ expression_token_range :: proc(expr: Expression) -> TokenRange {
 	}
 
 	switch ex in expr.kind {
-	case InvalidExpression:
-		return ex.tokens
 	case LogicalOp:
 		return _from_to(ex.first, ex.second)
 	case CompareOp:

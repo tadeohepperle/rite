@@ -156,15 +156,6 @@ primitive_value_to_string :: proc(prim: PrimitiveValue) -> string {
 }
 expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 	switch ex in expr.kind {
-	case InvalidExpression:
-		return tprint(
-			"InvalidExpression(",
-			ex.msg,
-			", got `",
-			ex.tokens,
-			tokens_as_code(ex.tokens_slice),
-			"`)",
-		)
 	case LogicalOp:
 		return two_arg_expr_to_string("OR" if ex.kind == .Or else "AND", ex.first^, ex.second^)
 	case CompareOp:
@@ -550,10 +541,11 @@ expression_from_string :: proc(s: string) -> Expression {
 	return parse_expression(tokens[:])
 }
 
-module_from_string :: proc(s: string) -> (Module, []Token) {
-	tokens, err := tokenize(s)
+module_from_string :: proc(source: string) -> (Module, []Token, ^Errors) {
+	tokens, err := tokenize(source)
 	assert(err == nil)
-	return parse(tokens[:]), tokens[:]
+	errors := new_clone(errors_create(source, tokens[:]))
+	return parse(tokens[:], errors), tokens[:], errors
 }
 
 statement_slice_eq :: proc(a: []Statement, b: []Statement) -> bool {
@@ -714,9 +706,6 @@ primitive_value_eq :: proc(a: PrimitiveValue, b: PrimitiveValue) -> bool {
 }
 expression_eq :: proc(a_ex: Expression, b_ex: Expression) -> bool {
 	switch a in a_ex.kind {
-	case InvalidExpression:
-		b := b_ex.kind.(InvalidExpression) or_return
-		return b.msg == a.msg
 	case LogicalOp:
 		b := b_ex.kind.(LogicalOp) or_return
 		if a.kind != b.kind {
@@ -725,13 +714,13 @@ expression_eq :: proc(a_ex: Expression, b_ex: Expression) -> bool {
 		return expression_eq(a.first^, b.first^) && expression_eq(a.second^, b.second^)
 	case CompareOp:
 		b := b_ex.kind.(CompareOp) or_return
+		expression_eq(a.first^, b.first^) or_return
 	case MathOp:
 		b := b_ex.kind.(MathOp) or_return
-		return(
-			a.kind == b.kind &&
-			expression_eq(a.first^, b.first^) &&
-			expression_eq(a.second^, b.second^) \
-		)
+		if a.kind != b.kind {
+			return false
+		}
+		return expression_eq(a.first^, b.first^) && expression_eq(a.second^, b.second^)
 	case NegateExpression:
 		b := b_ex.kind.(NegateExpression) or_return
 		return expression_eq(a.inner^, b.inner^)
