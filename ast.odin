@@ -45,9 +45,8 @@ _invalid_expression :: proc "contextless" (
 // todo: should be struct for tracking type in type inference!
 ExpressionKind :: union #no_nil {
 	InvalidExpression,
-	LogicalOr,
-	LogicalAnd,
-	Comparison,
+	LogicalOp,
+	CompareOp,
 	MathOp,
 	NegateExpression,
 	NotExpression,
@@ -98,15 +97,17 @@ FunctionArg :: struct {
 	// default_value: Expression
 }
 
-LogicalAnd :: struct {
+LogicalOpKind :: enum {
+	And,
+	Or,
+}
+
+LogicalOp :: struct {
+	kind:   LogicalOpKind,
 	first:  ^Expression,
 	second: ^Expression,
 }
 
-LogicalOr :: struct {
-	first:  ^Expression,
-	second: ^Expression,
-}
 MathOp :: struct {
 	kind:   MathOpKind,
 	first:  ^Expression,
@@ -121,15 +122,15 @@ MathOpKind :: enum {
 	Mul,
 	Div,
 }
-Comparison :: struct {
+CompareOp :: struct {
 	first:  ^Expression,
-	others: []ComparisonElement,
+	others: []CompareOpElement,
 }
-ComparisonElement :: struct {
-	kind: ComparisonKind,
+CompareOpElement :: struct {
+	kind: CompareOpKind,
 	expr: Expression,
 }
-ComparisonKind :: enum {
+CompareOpKind :: enum {
 	NotEqual,
 	Equal,
 	Greater,
@@ -387,11 +388,9 @@ expression_token_range :: proc(expr: Expression) -> TokenRange {
 	switch ex in expr.kind {
 	case InvalidExpression:
 		return ex.tokens
-	case LogicalOr:
+	case LogicalOp:
 		return _from_to(ex.first, ex.second)
-	case LogicalAnd:
-		return _from_to(ex.first, ex.second)
-	case Comparison:
+	case CompareOp:
 		assert(len(ex.others) > 0)
 		return _from_to(ex.first, &ex.others[len(ex.others) - 1].expr)
 	case MathOp:

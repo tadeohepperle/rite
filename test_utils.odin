@@ -114,7 +114,7 @@ two_arg_expr_to_string :: proc(op: string, first: Expression, second: Expression
 	return tprint(op, "(", first, ", ", second, ")")
 }
 
-comparison_kind_to_string :: proc(cmp_kind: ComparisonKind) -> string {
+comparison_kind_to_string :: proc(cmp_kind: CompareOpKind) -> string {
 	switch cmp_kind {
 	case .Equal:
 		return "EQUAL"
@@ -165,11 +165,9 @@ expression_to_string :: proc(expr: Expression, indent: string = "") -> string {
 			tokens_as_code(ex.tokens_slice),
 			"`)",
 		)
-	case LogicalOr:
-		return two_arg_expr_to_string("OR", ex.first^, ex.second^)
-	case LogicalAnd:
-		return two_arg_expr_to_string("AND", ex.first^, ex.second^)
-	case Comparison:
+	case LogicalOp:
+		return two_arg_expr_to_string("OR" if ex.kind == .Or else "AND", ex.first^, ex.second^)
+	case CompareOp:
 		if len(ex.others) != 1 {
 			panic("more than 2 way comparison not supported in expression printer atm!")
 		}
@@ -719,14 +717,14 @@ expression_eq :: proc(a_ex: Expression, b_ex: Expression) -> bool {
 	case InvalidExpression:
 		b := b_ex.kind.(InvalidExpression) or_return
 		return b.msg == a.msg
-	case LogicalOr:
-		b := b_ex.kind.(LogicalOr) or_return
+	case LogicalOp:
+		b := b_ex.kind.(LogicalOp) or_return
+		if a.kind != b.kind {
+			return false
+		}
 		return expression_eq(a.first^, b.first^) && expression_eq(a.second^, b.second^)
-	case LogicalAnd:
-		b := b_ex.kind.(LogicalAnd) or_return
-		return expression_eq(a.first^, b.first^) && expression_eq(a.second^, b.second^)
-	case Comparison:
-		b := b_ex.kind.(Comparison) or_return
+	case CompareOp:
+		b := b_ex.kind.(CompareOp) or_return
 	case MathOp:
 		b := b_ex.kind.(MathOp) or_return
 		return(

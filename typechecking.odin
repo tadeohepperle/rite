@@ -38,13 +38,10 @@ declaration_outer_dependencies :: proc(decl: Declaration) -> map[string]Empty {
 		switch ex in expr.kind {
 		case InvalidExpression:
 		// nothing to do
-		case LogicalOr:
+		case LogicalOp:
 			_collect_expr(deps, ex.first^)
 			_collect_expr(deps, ex.second^)
-		case LogicalAnd:
-			_collect_expr(deps, ex.first^)
-			_collect_expr(deps, ex.second^)
-		case Comparison:
+		case CompareOp:
 			_collect_expr(deps, ex.first^)
 			for other in ex.others {
 				_collect_expr(deps, other.expr)
@@ -345,7 +342,7 @@ typecheck_const_declaration :: proc(using ctx: ^TypeCheckCtx, const: ^ScopeConst
 	decl_kind := const.decl.kind
 	if decl_kind == .ConstExplicit {
 		ty_expr := &const.decl.ty.(Expression) or_else panic("ConstExplicit has ty expr")
-		typecheck_expression(ctx, ty_expr, TYPE_TYPE)
+		typecheck_type_expr(ctx, ty_expr)
 		ty_value := eval_const_expr(ctx, ty_expr^)
 		if ty_value.type == nil {
 			// unknown value, some error occurred maybe looking up some named in the const expr. 
@@ -371,7 +368,7 @@ typecheck_const_declaration :: proc(using ctx: ^TypeCheckCtx, const: ^ScopeConst
 
 	} else if decl_kind == .ConstInferred {
 		value_expr := &const.decl.value.(Expression) or_else panic("ConstInferred has value expr")
-		typecheck_expression(ctx, value_expr, nil)
+		typecheck_any_expr(ctx, value_expr)
 
 	} else {
 		panic("Not a const declaration")
@@ -459,14 +456,17 @@ any_value_to_string :: proc(val: AnyValue) -> string {
 		return tprint("String(", val.data.string, ")")
 	case .Char:
 		return tprint("Char(", val.data.char, ")")
+	case .Symbol:
+		return tprint("Symbol(", val.data.string, ")")
+	case .Type:
+		return tprint("Type(", val.data.type.structure, ")") // todo
 	case .Struct:
 		return tprint("Some Struct Value") // todo
 	case .Union:
 		return tprint("Some Union Value") // todo
 	case .Enum:
 		return tprint("Some Enum Value") // todo
-	case .Type:
-		return tprint("Type(", val.data.type.structure, ")") // todo
+
 	case .Function:
 		return tprint("Some Function Value")
 	case .Array:
@@ -505,7 +505,7 @@ TypeInfo :: struct {
 }
 TypeStructure :: struct {
 	tag:  TypeTag,
-	meta: TypeMeta,
+	data: TypeData,
 }
 TypeTag :: enum {
 	None,
@@ -514,15 +514,16 @@ TypeTag :: enum {
 	Bool,
 	String,
 	Char,
+	Symbol,
+	Type,
 	Struct,
 	Union,
 	Enum,
-	Type,
 	Function,
 	Array,
 	Map,
 }
-TypeMeta :: struct #raw_union {
+TypeData :: struct #raw_union {
 	enum_ty:     EnumType,
 	struct_ty:   StructType,
 	union_ty:    UnionType,
@@ -549,11 +550,15 @@ EnumVariantInfo :: struct {
 	name: string,
 }
 StructType :: struct {
-	name:           Maybe(string),
-	unnamed_fields: []UnnamedFieldInfo,
-	named_fields:   []NamedFieldInfo,
-	size:           int,
-	is_numeric:     bool,
+	name:       Maybe(string),
+	fields:     StructTypeFields,
+	size:       int,
+	is_numeric: bool,
+}
+StructTypeFields :: union {
+	// nil means no fields at all
+	[]UnnamedFieldInfo,
+	[]NamedFieldInfo,
 }
 UnnamedFieldInfo :: struct {
 	ty:     Type,
@@ -583,61 +588,84 @@ types_get :: proc(types: ^Types, structure: TypeStructure) -> Type {
 types_get_array_type :: proc(types: ^Types, item_type: Type) -> Type {
 	arr_ty_structure := TypeStructure {
 		tag = .Array,
-		meta = {array_ty = ArrayType{item_type = item_type}},
+		data = {array_ty = ArrayType{item_type = item_type}},
 	}
 	return types_get(types, arr_ty_structure)
 }
-
+types_get_map_type :: proc(types: ^Types, key_type: Type, value_type: Type) -> Type {
+	map_ty_structure := TypeStructure {
+		tag = .Map,
+		data = {map_ty = MapType{key_type, value_type}},
+	}
+	return types_get(types, map_ty_structure)
+}
 
 // calculates a typeid as a hash of the types structure
 type_hash_from_structure :: proc(structure: TypeStructure) -> TypeHash {
+	NONE_TYPE_HASH :: 0
+	BOOL_TYPE_HASH :: 1
+	INT_TYPE_HASH :: 2
+	FLOAT_TYPE_HASH :: 3
+	STRING_TYPE_HASH :: 4
+	CHAR_TYPE_HASH :: 5
+	TYPE_TYPE_HASH :: 6
+	SYMBOL_TYPE_HASH :: 6
+
 	switch structure.tag {
 	case .None:
-		return NONE_TYPE_ID
+		return NONE_TYPE_HASH
 	case .Bool:
-		return BOOL_TYPE_ID
+		return BOOL_TYPE_HASH
 	case .Int:
-		return INT_TYPE_ID
+		return INT_TYPE_HASH
 	case .Float:
-		return FLOAT_TYPE_ID
+		return FLOAT_TYPE_HASH
 	case .String:
-		return STRING_TYPE_ID
+		return STRING_TYPE_HASH
 	case .Char:
-		return CHAR_TYPE_ID
+		return CHAR_TYPE_HASH
+	case .Symbol:
+		return SYMBOL_TYPE_HASH
 	case .Array:
-		array_ty := structure.meta.array_ty
+		array_ty := structure.data.array_ty
 		h: Hasher = hasher_init()
 		hasher_add(&h, "#Array") //  todo: I think this is inefficient.
 		hasher_add(&h, array_ty.item_type.hash)
 		return TypeHash(hasher_finish(h))
 	case .Map:
-		map_ty := structure.meta.map_ty
+		map_ty := structure.data.map_ty
 		h: Hasher = hasher_init()
 		hasher_add(&h, "#Map")
 		hasher_add(&h, map_ty.key_type.hash)
 		hasher_add(&h, map_ty.value_type.hash)
 		return TypeHash(hasher_finish(h))
 	case .Type:
-		return TYPE_TYPE_ID
+		return TYPE_TYPE_HASH
 	case .Struct:
-		struct_ty := structure.meta.struct_ty
+		struct_ty := structure.data.struct_ty
 		h: Hasher = hasher_init()
 		hasher_add(&h, "#Struct")
 		if struct_name, ok := struct_ty.name.(string); ok {
 			hasher_add(&h, struct_name)
 		}
-		for uf in struct_ty.unnamed_fields {
-			hasher_add(&h, uf.ty.hash)
-		}
-		for nf in struct_ty.named_fields {
-			hasher_add(&h, nf.name)
-			hasher_add(&h, nf.ty.hash)
+		switch fields in struct_ty.fields {
+		case nil:
+		// nothing to do for empty struct
+		case []UnnamedFieldInfo:
+			for field in fields {
+				hasher_add(&h, field.ty.hash)
+			}
+		case []NamedFieldInfo:
+			for field in fields {
+				hasher_add(&h, field.name)
+				hasher_add(&h, field.ty.hash)
+			}
 		}
 		return TypeHash(hasher_finish(h))
 	case .Union:
 		// todo: this is bullshit right now! needs to be order independent though!
 		hash: TypeHash = 0
-		union_ty := structure.meta.union_ty
+		union_ty := structure.data.union_ty
 		for variant in union_ty.variants {
 			hash ~= variant.hash
 		}
@@ -645,13 +673,13 @@ type_hash_from_structure :: proc(structure: TypeStructure) -> TypeHash {
 	case .Enum:
 		// todo: this is bullshit right now!
 		hash: TypeHash = 0
-		enum_ty := structure.meta.enum_ty
+		enum_ty := structure.data.enum_ty
 		for variant in enum_ty.variants {
 			hash ~= variant.hash
 		}
 		return hash
 	case .Function:
-		fn_ty := structure.meta.function_ty
+		fn_ty := structure.data.function_ty
 		h: Hasher = hasher_init()
 		for arg_ty in fn_ty.arg_types {
 			hasher_add(&h, arg_ty.hash)
@@ -671,60 +699,26 @@ function_type_arg_types_hash :: proc(fn_ty: FunctionType) -> ArgTypesHash {
 }
 
 
-typecheck_expression :: proc(
-	using ctx: ^TypeCheckCtx,
-	expr: ^Expression,
-	wanted_type: Maybe(Type),
-) {
+// expr could be type or value e.g. IntList :: [int]   vs.   MyTypes :: [int, string, float]
+typecheck_any_expr :: proc(using ctx: ^TypeCheckCtx, expr: ^Expression) {
+
+}
+
+// only valid types are accepted, e.g. int or { name: string, address: {foo: [int], bar: bool } } or [{int, int, int}]
+typecheck_type_expr :: proc(using ctx: ^TypeCheckCtx, expr: ^Expression) {
 	switch &ex in expr.kind {
-	case InvalidExpression:
-	// just don't assign any type, leave type as nil ptr
-	case LogicalOr:
-		typecheck_expression(ctx, ex.first, BOOL_TYPE)
-		typecheck_expression(ctx, ex.second, BOOL_TYPE)
-		expr.type = BOOL_TYPE
-	case LogicalAnd:
-		typecheck_expression(ctx, ex.first, BOOL_TYPE)
-		typecheck_expression(ctx, ex.second, BOOL_TYPE)
-		expr.type = BOOL_TYPE
-	case Comparison:
-		// for now it is probably fine to expect that the left and right side of the comparison are the same type
-		typecheck_expression(ctx, ex.first, nil)
-		comparand_type := ex.first.type
-		assert(comparand_type != nil)
-		for &other in ex.others {
-			typecheck_expression(ctx, &other.expr, comparand_type)
-		}
-		expr.type = BOOL_TYPE
-	case MathOp:
-		expr.tag = .Value // math ops should not be possible between types e.g. `A :: int + string`
-		typecheck_expression(ctx, ex.first, nil)
-		typecheck_expression(ctx, ex.second, nil)
-		if ex.first.type != nil && ex.second.type != nil {
-			res_type := math_op_result_type(ex.first.type, ex.second.type)
-			expr.type = res_type // could be nil if no math op possible between the types, that is ok.
-		}
-	case NegateExpression:
-		expr.tag = .Value // no `-` negation on types, so this expr is always a value
-		typecheck_expression(ctx, ex.inner, nil)
-		expr.type = ex.inner.type
-	// question: should we check if the inner type is even numeric here?
-	// Without check the error occurs later, when it shows that the inner type is not numeric??
-	// if ex.inner.type != nil {
-	// 	    if numeric_type_tag(ex.inner.type) != .None {  expr.type = ex.inner.type  } 
-	// }
-	case NotExpression:
-		expr.tag = .Value // no `!` logic on types, so this expr is always a value
-		typecheck_expression(ctx, ex.inner, BOOL_TYPE)
-		expr.type = BOOL_TYPE
+	case InvalidExpression, LogicalOp, CompareOp, MathOp, NegateExpression, NotExpression:
+		break
 	case CallOp:
+		todo() // check the function and the args, eval type function at compile time
 	case IndexOp:
+		todo()
 	case AccessOp:
+		todo()
 	case Ident:
+		todo()
 	case Primitive:
-		// this logic assigns types and the correct tag (Value, Type, TypeAndValue) to all:
-		// - literals, e.g.: 12842, 12.999, "Hello", 'A', true, false
-		assert(ex.value.type != .None) // forbidden, parser should put type = .Type, data = {primitive_type = .None} instead.
+		assert(ex.value.type != .None) // forbidden, parser should put type = .Type, data = {primitive_type = .None} inste
 		if ex.value.type == .Type {
 			prim := ex.value.data.primitive_type
 			expr.type = primitive_type_to_type(prim)
@@ -733,47 +727,62 @@ typecheck_expression :: proc(
 			} else {
 				expr.tag = .Type
 			}
-		} else {
-			// if float wanted, but int literal given, that is okay, change the int literal into a float literal:
-			// e.g. in `LEN: float : 2` the 2 becomes `2.0`
-			if wanted, ok := wanted_type.(Type);
-			   ok && wanted == FLOAT_TYPE && ex.value.type == .Int {
-				val_as_float := f64(ex.value.data.int)
-				ex.value = PrimitiveValue{.Float, {float = val_as_float}}
-			}
-			expr.type = primitive_type_to_type(ex.value.type)
-			expr.tag = .Value
+			return
 		}
 	case StructLiteral:
+		// if 
 		todo()
 	case ArrayLiteral:
-		typecheck_array_literal(ctx, expr, ex, wanted_type)
+		if len(ex.values) != 1 {
+			break
+		}
+		item := &ex.values[0]
+		typecheck_type_expr(ctx, item)
+		if item.type == nil {
+			break
+		}
+		expr.type = types_get_array_type(ctx.types, item.type)
+		expr.tag = .Type
 		return
 	case MapLiteral:
-		todo()
+		if len(ex.entries) != 1 {
+			break
+		}
+		entry := &ex.entries[0]
+		typecheck_type_expr(ctx, &entry.key)
+		typecheck_type_expr(ctx, &entry.value)
+		if entry.key.type == nil {
+			error_expr(ctx.errors, &entry.key, "Is not a valid key type for a map")
+			return
+		}
+		if entry.value.type == nil {
+			error_expr(ctx.errors, &entry.value, "Is not a valid value type for a map")
+			return
+		}
+		expr.type = types_get_map_type(ctx.types, entry.key.type, entry.value.type)
+		expr.tag = .Type
+		return
 	case FunctionSignature:
 		function_ty: FunctionType
-
 		arg_types: []Type = make([]Type, len(ex.arg_types))
+		// check the types of all args and the return type:
 		any_arg_invalid: bool
 		for &arg, i in ex.arg_types {
-			typecheck_expression(ctx, &arg, TYPE_TYPE)
+			typecheck_type_expr(ctx, &arg)
 			if arg.type == nil {
 				any_arg_invalid = true
 			} else {
 				arg_types[i] = arg.type
 			}
-			// if arg.
 		}
-		typecheck_expression(ctx, ex.return_type, TYPE_TYPE)
+		typecheck_type_expr(ctx, ex.return_type)
 		if ex.return_type.type == nil || any_arg_invalid {
 			delete(arg_types)
-			return // cannot figure out function type
+			break
 		}
-
 		function_ty_structure := TypeStructure {
 			tag = .Function,
-			meta = {
+			data = {
 				function_ty = FunctionType {
 					arg_types = arg_types,
 					return_type = ex.return_type.type,
@@ -781,141 +790,271 @@ typecheck_expression :: proc(
 			},
 		}
 		expr.type = types_get(ctx.types, function_ty_structure)
-		expr.tag = .Type // because this is just a signature, no actual value
+		expr.tag = .Type
+		return
 	case FunctionDefinition:
-		function_ty: FunctionType
-
-		// check the arg types:
-		arg_types: []Type = make([]Type, len(ex.args))
-		any_arg_invalid: bool
-		for &arg, i in ex.args {
-			typecheck_expression(ctx, &arg.ty, TYPE_TYPE)
-			if arg.ty.type == nil {
-				any_arg_invalid = true
-			} else {
-				arg_types[i] = arg.ty.type
-			}
-		}
-		// if there is a return type, check it, otherwise, act like NONE_TYPE would be return type
-		return_ty: Type = nil
-		if return_ty_expr, ok := ex.return_type.(^Expression); ok {
-			typecheck_expression(ctx, return_ty_expr, TYPE_TYPE)
-			return_ty = return_ty_expr.type
-		} else {
-			return_ty = NONE_TYPE
-		}
-		if return_ty == nil || any_arg_invalid {
-			delete(arg_types)
-			return // cannot figure out function type
-		}
-		function_ty_structure := TypeStructure {
-			tag = .Function,
-			meta = {function_ty = FunctionType{arg_types = arg_types, return_type = return_ty}},
-		}
-		// do not typecheck fn body yet, as that is a new scope.
-		expr.type = types_get(ctx.types, function_ty_structure)
-		expr.tag = .Value // because this is the actual instructions not a type
+		break
 	case EnumDecl:
-		expr.type = TYPE_TYPE
+		todo()
 	case UnionDecl:
-		union_ty: Type
-		// todo
-		expr.type = TYPE_TYPE
+		todo()
 	}
 
-	// todo! where to raise errors like this???
-	// add some error because if some type was expected and there is now a mismatch:
-	// if wanted, ok := wanted_type.(Type); ok {
-	// 	if expr.type != wanted {
-	// 		range := expression_token_range(expr^)
-	// 		errors_add(
-	// 			ctx.errors,
-	// 			range,
-	// 			"for expression ",
-	// 			expression_to_string(expr^),
-	// 			" type ",
-	// 			type_to_string(wanted),
-	// 			" was expected, but type ",
-	// 			type_to_string(expr.type),
-	// 			" was assigned",
-	// 		)
-	// 	}
-	// }
+	error_expr(ctx.errors, expr, "Is not a valid type expression")
 }
 
-typecheck_array_literal :: proc(
-	ctx: ^TypeCheckCtx,
-	expr: ^Expression,
-	arr: ArrayLiteral, // aliases expr
-	wanted_type: Maybe(Type),
-) {
-	n_values := len(arr.values)
-	if wanted, ok := wanted_type.(Type); ok {
-		// a specific array was wanted, e.g. `A : [int] : []` or `A : [int] = [2,2,4,3,5]`
-		if wanted.tag == .Array {
-			expr.tag = .Value
-			wanted_item_ty := wanted.meta.array_ty.item_type
-			expr.type = types_get_array_type(ctx.types, wanted_item_ty)
-			for &val in arr.values {
-				typecheck_expression(ctx, &val, wanted_item_ty)
-			}
-		} else if wanted.tag == .Type { 	// e.g. [int]
-			expr.tag = .Type
-			if n_values != 1 {
-				error_expr(ctx.errors, expr, "Type wanted, got multi element array")
-				return
-			}
-			// the one item should be a type itself:
-			item := &arr.values[0]
-			typecheck_expression(ctx, item, TYPE_TYPE)
-			if item.type == nil {
-				return
-			}
-			if !can_be_type(item.tag) {
-				error_expr(ctx.errors, expr, "Value in single element array is not a type")
-				return
-			}
-			// if the inner is indeed a valid type now, try register the corresponding array type:
-			arr_ty_structure := TypeStructure {
-				tag = .Array,
-				meta = {array_ty = ArrayType{item_type = item.type}},
-			}
-			expr.type = types_get(ctx.types, arr_ty_structure)
-			return
-		} else {
-			error_expr(
-				ctx.errors,
-				expr,
-				tprint("Array literal is not wanted type ", type_to_string(wanted)),
-			)
-			return
-		}
-	} else {
-		// array literal and nothing specific is wanted
-		if n_values == 0 {
-			error_expr(ctx.errors, expr, "type of 0-element array literal not known")
-			return
-		}
-		// first element dictates the type
-		first_val := &arr.values[0]
-		typecheck_expression(ctx, first_val, nil) // type not restricted, could be whatever	
-		// if first_val is nil, this checks the other values without any expectations,
-		// otherwise expects that all other values are the same type
-		for &el in arr.values[1:] {
-			typecheck_expression(ctx, first_val, first_val.type)
-		}
-		if first_val.type == nil {
-			return
-		}
-		assert(first_val.tag != .Unknown)
-		expr.type = types_get_array_type(ctx.types, first_val.type)
-		if n_values == 1 && can_be_type(first_val.tag) {
-			expr.tag = .Type
-		} else {
-			expr.tag = .Value
-		}
-	}
+typecheck_value_expr :: proc(using ctx: ^TypeCheckCtx, expr: ^Expression, value_type: Type) {
+
 }
+
+
+// typecheck_expression :: proc(
+// 	using ctx: ^TypeCheckCtx,
+// 	expr: ^Expression,
+// 	wanted_type: Maybe(Type),
+// ) {
+// 	switch &ex in expr.kind {
+// 	case InvalidExpression:
+// 	// just don't assign any type, leave type as nil ptr
+// 	case LogicalOr:
+// 		typecheck_expression(ctx, ex.first, BOOL_TYPE)
+// 		typecheck_expression(ctx, ex.second, BOOL_TYPE)
+// 		expr.type = BOOL_TYPE
+// 	case LogicalAnd:
+// 		typecheck_expression(ctx, ex.first, BOOL_TYPE)
+// 		typecheck_expression(ctx, ex.second, BOOL_TYPE)
+// 		expr.type = BOOL_TYPE
+// 	case Comparison:
+// 		// for now it is probably fine to expect that the left and right side of the comparison are the same type
+// 		typecheck_expression(ctx, ex.first, nil)
+// 		comparand_type := ex.first.type
+// 		assert(comparand_type != nil)
+// 		for &other in ex.others {
+// 			typecheck_expression(ctx, &other.expr, comparand_type)
+// 		}
+// 		expr.type = BOOL_TYPE
+// 	case MathOp:
+// 		expr.tag = .Value // math ops should not be possible between types e.g. `A :: int + string`
+// 		typecheck_expression(ctx, ex.first, nil)
+// 		typecheck_expression(ctx, ex.second, nil)
+// 		if ex.first.type != nil && ex.second.type != nil {
+// 			res_type := math_op_result_type(ex.first.type, ex.second.type)
+// 			expr.type = res_type // could be nil if no math op possible between the types, that is ok.
+// 		}
+// 	case NegateExpression:
+// 		expr.tag = .Value // no `-` negation on types, so this expr is always a value
+// 		typecheck_expression(ctx, ex.inner, nil)
+// 		expr.type = ex.inner.type
+// 	// question: should we check if the inner type is even numeric here?
+// 	// Without check the error occurs later, when it shows that the inner type is not numeric??
+// 	// if ex.inner.type != nil {
+// 	// 	    if numeric_type_tag(ex.inner.type) != .None {  expr.type = ex.inner.type  } 
+// 	// }
+// 	case NotExpression:
+// 		expr.tag = .Value // no `!` logic on types, so this expr is always a value
+// 		typecheck_expression(ctx, ex.inner, BOOL_TYPE)
+// 		expr.type = BOOL_TYPE
+// 	case CallOp:
+// 	case IndexOp:
+// 	case AccessOp:
+// 	case Ident:
+// 	case Primitive:
+// 		// this logic assigns types and the correct tag (Value, Type, TypeAndValue) to all:
+// 		// - literals, e.g.: 12842, 12.999, "Hello", 'A', true, false
+// 		assert(ex.value.type != .None) // forbidden, parser should put type = .Type, data = {primitive_type = .None} instead.
+// 		if ex.value.type == .Type {
+// 			prim := ex.value.data.primitive_type
+// 			expr.type = primitive_type_to_type(prim)
+// 			if prim == .None {
+// 				expr.tag = .TypeAndValue
+// 			} else {
+// 				expr.tag = .Type
+// 			}
+// 		} else {
+// 			// if float wanted, but int literal given, that is okay, change the int literal into a float literal:
+// 			// e.g. in `LEN: float : 2` the 2 becomes `2.0`
+// 			if wanted, ok := wanted_type.(Type);
+// 			   ok && wanted == FLOAT_TYPE && ex.value.type == .Int {
+// 				val_as_float := f64(ex.value.data.int)
+// 				ex.value = PrimitiveValue{.Float, {float = val_as_float}}
+// 			}
+// 			expr.type = primitive_type_to_type(ex.value.type)
+// 			expr.tag = .Value
+// 		}
+// 	case StructLiteral:
+// 		todo()
+// 	case ArrayLiteral:
+// 		typecheck_array_literal(ctx, expr, ex, wanted_type)
+// 		return
+// 	case MapLiteral:
+// 		todo()
+// 	case FunctionSignature:
+// 		function_ty: FunctionType
+
+// 		arg_types: []Type = make([]Type, len(ex.arg_types))
+// 		any_arg_invalid: bool
+// 		for &arg, i in ex.arg_types {
+// 			typecheck_expression(ctx, &arg, TYPE_TYPE)
+// 			if arg.type == nil {
+// 				any_arg_invalid = true
+// 			} else {
+// 				arg_types[i] = arg.type
+// 			}
+// 			// if arg.
+// 		}
+// 		typecheck_expression(ctx, ex.return_type, TYPE_TYPE)
+// 		if ex.return_type.type == nil || any_arg_invalid {
+// 			delete(arg_types)
+// 			return // cannot figure out function type
+// 		}
+
+// 		function_ty_structure := TypeStructure {
+// 			tag = .Function,
+// 			meta = {
+// 				function_ty = FunctionType {
+// 					arg_types = arg_types,
+// 					return_type = ex.return_type.type,
+// 				},
+// 			},
+// 		}
+// 		expr.type = types_get(ctx.types, function_ty_structure)
+// 		expr.tag = .Type // because this is just a signature, no actual value
+// 	case FunctionDefinition:
+// 		function_ty: FunctionType
+
+// 		// check the arg types:
+// 		arg_types: []Type = make([]Type, len(ex.args))
+// 		any_arg_invalid: bool
+// 		for &arg, i in ex.args {
+// 			typecheck_expression(ctx, &arg.ty, TYPE_TYPE)
+// 			if arg.ty.type == nil {
+// 				any_arg_invalid = true
+// 			} else {
+// 				arg_types[i] = arg.ty.type
+// 			}
+// 		}
+// 		// if there is a return type, check it, otherwise, act like NONE_TYPE would be return type
+// 		return_ty: Type = nil
+// 		if return_ty_expr, ok := ex.return_type.(^Expression); ok {
+// 			typecheck_expression(ctx, return_ty_expr, TYPE_TYPE)
+// 			return_ty = return_ty_expr.type
+// 		} else {
+// 			return_ty = NONE_TYPE
+// 		}
+// 		if return_ty == nil || any_arg_invalid {
+// 			delete(arg_types)
+// 			return // cannot figure out function type
+// 		}
+// 		function_ty_structure := TypeStructure {
+// 			tag = .Function,
+// 			meta = {function_ty = FunctionType{arg_types = arg_types, return_type = return_ty}},
+// 		}
+// 		// do not typecheck fn body yet, as that is a new scope.
+// 		expr.type = types_get(ctx.types, function_ty_structure)
+// 		expr.tag = .Value // because this is the actual instructions not a type
+// 	case EnumDecl:
+// 		expr.type = TYPE_TYPE
+// 	case UnionDecl:
+// 		union_ty: Type
+// 		// todo
+// 		expr.type = TYPE_TYPE
+// 	}
+
+// 	// todo! where to raise errors like this???
+// 	// add some error because if some type was expected and there is now a mismatch:
+// 	// if wanted, ok := wanted_type.(Type); ok {
+// 	// 	if expr.type != wanted {
+// 	// 		range := expression_token_range(expr^)
+// 	// 		errors_add(
+// 	// 			ctx.errors,
+// 	// 			range,
+// 	// 			"for expression ",
+// 	// 			expression_to_string(expr^),
+// 	// 			" type ",
+// 	// 			type_to_string(wanted),
+// 	// 			" was expected, but type ",
+// 	// 			type_to_string(expr.type),
+// 	// 			" was assigned",
+// 	// 		)
+// 	// 	}
+// 	// }
+// }
+
+// typecheck_array_literal :: proc(
+// 	ctx: ^TypeCheckCtx,
+// 	expr: ^Expression,
+// 	arr: ArrayLiteral, // aliases expr
+// 	wanted_type: Maybe(Type),
+// ) {
+// 	n_values := len(arr.values)
+// 	if wanted, ok := wanted_type.(Type); ok {
+// 		// a specific array was wanted, e.g. `A : [int] : []` or `A : [int] = [2,2,4,3,5]`
+// 		if wanted.tag == .Array {
+// 			expr.tag = .Value
+// 			wanted_item_ty := wanted.meta.array_ty.item_type
+// 			expr.type = types_get_array_type(ctx.types, wanted_item_ty)
+// 			for &val in arr.values {
+// 				typecheck_expression(ctx, &val, wanted_item_ty)
+// 			}
+// 		} else if wanted.tag == .Type { 	// e.g. [int]
+// 			expr.tag = .Type
+// 			if n_values != 1 {
+// 				error_expr(ctx.errors, expr, "Type wanted, got multi element array")
+// 				return
+// 			}
+// 			// the one item should be a type itself:
+// 			item := &arr.values[0]
+// 			typecheck_expression(ctx, item, TYPE_TYPE)
+// 			if item.type == nil {
+// 				return
+// 			}
+// 			if !can_be_type(item.tag) {
+// 				error_expr(ctx.errors, expr, "Value in single element array is not a type")
+// 				return
+// 			}
+// 			// if the inner is indeed a valid type now, try register the corresponding array type:
+// 			arr_ty_structure := TypeStructure {
+// 				tag = .Array,
+// 				meta = {array_ty = ArrayType{item_type = item.type}},
+// 			}
+// 			expr.type = types_get(ctx.types, arr_ty_structure)
+// 			return
+// 		} else {
+// 			error_expr(
+// 				ctx.errors,
+// 				expr,
+// 				tprint("Array literal is not wanted type ", type_to_string(wanted)),
+// 			)
+// 			return
+// 		}
+// 	} else {
+// 		// array literal and nothing specific is wanted
+// 		if n_values == 0 {
+// 			error_expr(ctx.errors, expr, "type of 0-element array literal not known")
+// 			return
+// 		}
+// 		// first element dictates the type
+// 		first_val := &arr.values[0]
+// 		typecheck_expression(ctx, first_val, nil) // type not restricted, could be whatever	
+// 		// if first_val is nil, this checks the other values without any expectations,
+// 		// otherwise expects that all other values are the same type
+// 		for &el in arr.values[1:] {
+// 			typecheck_expression(ctx, first_val, first_val.type)
+// 		}
+// 		if first_val.type == nil {
+// 			return
+// 		}
+// 		assert(first_val.tag != .Unknown)
+// 		expr.type = types_get_array_type(ctx.types, first_val.type)
+// 		if n_values == 1 && can_be_type(first_val.tag) {
+// 			expr.tag = .Type
+// 		} else {
+// 			expr.tag = .Value
+// 		}
+// 	}
+// }
+
+
 // returns nil if there is no possible math op (+,-,*,/) between the two types
 // if a math op is possible the result type is probably either a or b
 math_op_result_type :: proc(a: Type, b: Type) -> (res_ty: Type) {
@@ -957,11 +1096,11 @@ numeric_type_tag :: proc(s: TypeStructure) -> NumericTypeTag {
 	case .Int, .Float:
 		return .Scalar
 	case .Struct:
-		if s.meta.struct_ty.is_numeric {
+		if s.data.struct_ty.is_numeric {
 			return .NumericStruct
 		}
 	case .Array:
-		item_numeric_kind := numeric_type_tag(s.meta.array_ty.item_type)
+		item_numeric_kind := numeric_type_tag(s.data.array_ty.item_type)
 		if item_numeric_kind == .Scalar {
 			return .ArrayOfScalars
 		} else if item_numeric_kind == .NumericStruct {
@@ -983,56 +1122,53 @@ type_to_string :: proc(ty: Type) -> string {
 // /////////////////////////////////////////////////////////////////////////////
 // SECTION: Builtin Types
 // /////////////////////////////////////////////////////////////////////////////
-NONE_TYPE_ID :: 0
-NONE_TYPE_INFO := TypeInfo {
-	hash = NONE_TYPE_ID,
-	tag  = .None,
+_type_info :: proc(structure: TypeStructure) -> TypeInfo {
+	return TypeInfo{type_hash_from_structure(structure), structure}
 }
-NONE_TYPE := &NONE_TYPE_INFO // should somehow elide to TYPE_TYPE because None can be type or value!
 
-BOOL_TYPE_ID :: 1
-BOOL_TYPE_INFO := TypeInfo {
-	hash = NONE_TYPE_ID,
-	tag  = .Bool,
-}
+NONE_TYPE_INFO := _type_info(TypeStructure{tag = TypeTag.None})
+NONE_TYPE := &NONE_TYPE_INFO
+
+BOOL_TYPE_INFO := _type_info(TypeStructure{tag = TypeTag.Bool})
 BOOL_TYPE := &BOOL_TYPE_INFO
 
-INT_TYPE_ID :: 2
-INT_TYPE_INFO := TypeInfo {
-	hash = INT_TYPE_ID,
-	tag  = .Int,
-}
+INT_TYPE_INFO := _type_info(TypeStructure{tag = TypeTag.Int})
 INT_TYPE := &INT_TYPE_INFO
 
-FLOAT_TYPE_ID :: 3
-FLOAT_TYPE_INFO := TypeInfo {
-	hash = FLOAT_TYPE_ID,
-	tag  = .Float,
-}
+FLOAT_TYPE_INFO := _type_info(TypeStructure{tag = TypeTag.Float})
 FLOAT_TYPE := &FLOAT_TYPE_INFO
 
-
-STRING_TYPE_ID :: 4
-STRING_TYPE_INFO := TypeInfo {
-	hash = STRING_TYPE_ID,
-	tag  = .String,
-}
+STRING_TYPE_INFO := _type_info(TypeStructure{tag = TypeTag.String})
 STRING_TYPE := &STRING_TYPE_INFO
 
-CHAR_TYPE_ID :: 5
-CHAR_TYPE_INFO := TypeInfo {
-	hash = CHAR_TYPE_ID,
-	tag  = .Char,
-}
+CHAR_TYPE_INFO := _type_info(TypeStructure{tag = TypeTag.Char})
 CHAR_TYPE := &CHAR_TYPE_INFO
 
+SYMBOL_TYPE_INFO := _type_info(TypeStructure{tag = TypeTag.Symbol})
+SYMBOL_TYPE := &SYMBOL_TYPE_INFO
+
 // this type is the type of Foo in `Foo :: { hello: true }` or Foo :: int
-TYPE_TYPE_ID :: 6
-TYPE_TYPE_INFO := TypeInfo {
-	hash = TYPE_TYPE_ID,
-	tag  = .Type,
-}
+TYPE_TYPE_INFO := _type_info(TypeStructure{tag = TypeTag.Type})
 TYPE_TYPE := &TYPE_TYPE_INFO
+
+BUILTIN_TYPES: []Type = {
+	NONE_TYPE,
+	BOOL_TYPE,
+	INT_TYPE,
+	FLOAT_TYPE,
+	STRING_TYPE,
+	CHAR_TYPE,
+	TYPE_TYPE,
+	SYMBOL_TYPE,
+}
+builtin_types :: proc() -> Types {
+	// Note: these builtin types do not use the bucket array for backing memory	
+	types: Types
+	for ty in BUILTIN_TYPES {
+		types.hash_to_types[ty.hash] = ty
+	}
+	return types
+}
 
 
 // __TYPE_ARRAY_TYPE_STRUCTURE := TypeStructure {
@@ -1064,17 +1200,4 @@ primitive_type_to_type :: proc(prim: PrimitiveType) -> Type {
 		return TYPE_TYPE
 	}
 	unreachable()
-}
-
-builtin_types :: proc() -> (types: Types) {
-	// Note: these builtin types do not use the bucket array for backing memory
-	types.hash_to_types[NONE_TYPE_ID] = NONE_TYPE
-	types.hash_to_types[BOOL_TYPE_ID] = BOOL_TYPE
-	types.hash_to_types[INT_TYPE_ID] = INT_TYPE
-	types.hash_to_types[FLOAT_TYPE_ID] = FLOAT_TYPE
-	types.hash_to_types[STRING_TYPE_ID] = STRING_TYPE
-	types.hash_to_types[CHAR_TYPE_ID] = CHAR_TYPE
-	// types.hash_to_types[TYPE_ARRAY_TYPE_ID] = TYPE_ARRAY_TYPE // important to 
-	// types.id_to_type_info[UNKNOWN_TYPE_ID] = UNKNOWN_TYPE
-	return types
 }

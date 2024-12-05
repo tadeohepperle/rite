@@ -309,7 +309,7 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 		expr = expect_logical_and_or_higher(p)
 		if current(p).ty == .Or {
 			second := expect_logical_or_or_higher(p)
-			return expression(LogicalOr{new_clone(expr), new_clone(second)})
+			return expression(LogicalOp{.Or, new_clone(expr), new_clone(second)})
 		} else {
 			return expr
 		}
@@ -320,7 +320,7 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 		expr = expect_comparison_or_higher(p)
 		if current(p).ty == .And {
 			second := expect_logical_and_or_higher(p)
-			return expression(LogicalOr{new_clone(expr), new_clone(second)})
+			return expression(LogicalOp{.And, new_clone(expr), new_clone(second)})
 		} else {
 			return expr
 		}
@@ -335,7 +335,7 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 		cmp_operator_token_ty_to_kind :: proc(
 			ty: TokenType,
 		) -> (
-			kind: ComparisonKind,
+			kind: CompareOpKind,
 			is_cmp: bool,
 		) {
 			#partial switch ty {
@@ -354,7 +354,7 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 			}
 			return {}, false
 		}
-		others: [dynamic]ComparisonElement
+		others: [dynamic]CompareOpElement
 		for {
 			kind, is_cmp := cmp_operator_token_ty_to_kind(current(p).ty)
 			if !is_cmp {
@@ -363,9 +363,9 @@ expect_expression :: proc(p: ^Parser) -> Expression {
 			// skip the comparison_operator
 			skip(p)
 			next_expr := expect_add_or_sub_or_higher(p)
-			append(&others, ComparisonElement{kind, next_expr})
+			append(&others, CompareOpElement{kind, next_expr})
 		}
-		return expression(Comparison{first = new_clone(first), others = others[:]})
+		return expression(CompareOp{first = new_clone(first), others = others[:]})
 	}
 	expect_add_or_sub_or_higher :: proc(p: ^Parser) -> Expression {
 		log.info("      expect_add_or_sub_or_higher")
